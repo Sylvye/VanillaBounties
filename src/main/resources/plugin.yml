@@ -1,0 +1,25 @@
+name: VanillaBounties
+version: ${version}
+main: me.vanillabounties.VanillaBountiesPlugin
+api-version: '1.21.11'
+description: Item-backed bounty system for event SMPs.
+author: VanillaBounties
+libraries:
+  - org.xerial:sqlite-jdbc:3.53.2.0
+commands:
+  bounty:
+    description: Place or clear item bounties.
+    usage: /bounty <player>|clear <all|player>
+  bounties:
+    description: Open the bounty board.
+    usage: /bounties
+  autobounties:
+    description: Manage server automatic bounties.
+    usage: /autobounties [add <kills>|remove <kills>]
+permissions:
+  vanillabounties.use:
+    description: Allows use of bounty commands.
+    default: true
+  vanillabounties.admin:
+    description: Allows management of automatic bounties.
+    default: op
