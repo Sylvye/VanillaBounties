@@ -1,6 +1,7 @@
 package me.vanillabounties.command;
 
 import me.vanillabounties.BountyService;
+import me.vanillabounties.model.BountyVisibility;
 import me.vanillabounties.model.KnownPlayer;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -39,8 +40,25 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (args.length != 1) {
-            player.sendMessage(Component.text("Usage: /bounty <player>", NamedTextColor.RED));
+        if (args.length < 1 || args.length > 2) {
+            player.sendMessage(Component.text("Usage: /bounty <player> [silent|public]", NamedTextColor.RED));
+            return true;
+        }
+
+        BountyVisibility visibility = BountyVisibility.NORMAL;
+        if (args.length == 2) {
+            if (args[1].equalsIgnoreCase("silent")) {
+                visibility = BountyVisibility.SILENT;
+            } else if (args[1].equalsIgnoreCase("public")) {
+                visibility = BountyVisibility.PUBLIC;
+            } else {
+                player.sendMessage(Component.text("Usage: /bounty <player> [silent|public]", NamedTextColor.RED));
+                return true;
+            }
+        }
+
+        if (args[0].equalsIgnoreCase("clear")) {
+            player.sendMessage(Component.text("Usage: /bounty clear <all|player>", NamedTextColor.RED));
             return true;
         }
 
@@ -50,7 +68,7 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        BountyService.PlaceResult result = bountyService.placeBounty(player, target.get());
+        BountyService.PlaceResult result = bountyService.placeBounty(player, target.get(), visibility);
         player.sendMessage(result.message());
         return true;
     }
@@ -90,8 +108,20 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1 && sender.hasPermission("vanillabounties.admin") && "clear".startsWith(args[0].toLowerCase(Locale.ROOT))) {
-            return List.of("clear");
+        if (args.length == 1) {
+            String prefix = args[0].toLowerCase(Locale.ROOT);
+            List<String> completions = new ArrayList<>();
+            if (sender.hasPermission("vanillabounties.admin") && "clear".startsWith(prefix)) {
+                completions.add("clear");
+            }
+            if (sender.hasPermission("vanillabounties.use")) {
+                for (String name : bountyService.searchKnownPlayerNames(prefix, 20)) {
+                    if (name.toLowerCase(Locale.ROOT).startsWith(prefix)) {
+                        completions.add(name);
+                    }
+                }
+            }
+            return completions;
         }
 
         if (args.length == 2 && args[0].equalsIgnoreCase("clear") && sender.hasPermission("vanillabounties.admin")) {
@@ -108,17 +138,18 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
             return completions;
         }
 
-        if (args.length != 1 || !sender.hasPermission("vanillabounties.use")) {
-            return List.of();
+        if (args.length == 2 && sender.hasPermission("vanillabounties.use")) {
+            String prefix = args[1].toLowerCase(Locale.ROOT);
+            List<String> modes = new ArrayList<>();
+            if ("silent".startsWith(prefix)) {
+                modes.add("silent");
+            }
+            if ("public".startsWith(prefix)) {
+                modes.add("public");
+            }
+            return modes;
         }
 
-        String prefix = args[0].toLowerCase(Locale.ROOT);
-        List<String> names = new ArrayList<>();
-        for (String name : bountyService.searchKnownPlayerNames(prefix, 20)) {
-            if (name.toLowerCase(Locale.ROOT).startsWith(prefix)) {
-                names.add(name);
-            }
-        }
-        return names;
+        return List.of();
     }
 }

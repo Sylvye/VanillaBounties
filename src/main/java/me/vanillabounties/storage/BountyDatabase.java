@@ -6,6 +6,7 @@ import me.vanillabounties.model.AutoBountyFolder;
 import me.vanillabounties.model.AutoBountyTemplate;
 import me.vanillabounties.model.KnownPlayer;
 import me.vanillabounties.model.RewardState;
+import me.vanillabounties.model.BountyVisibility;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 
@@ -64,6 +65,7 @@ public final class BountyDatabase implements AutoCloseable {
                     item_blob BLOB NOT NULL,
                     item_type TEXT NOT NULL,
                     item_amount INTEGER NOT NULL,
+                    visibility TEXT NOT NULL DEFAULT 'NORMAL',
                     state TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     claimable_at INTEGER,
@@ -117,6 +119,7 @@ public final class BountyDatabase implements AutoCloseable {
                 ON auto_bounty_items(folder_id, slot)
                 """);
         }
+        addColumnIfMissing("bounties", "visibility", "TEXT NOT NULL DEFAULT 'NORMAL'");
         seedAutoBountyDefaults();
     }
 
@@ -182,7 +185,7 @@ public final class BountyDatabase implements AutoCloseable {
         ItemStack item,
         long now
     ) throws SQLException {
-        insertActiveBounty(target.uuid(), target.name(), placerUuid, placerName, item, now);
+        insertActiveBounty(target.uuid(), target.name(), placerUuid, placerName, item, now, BountyVisibility.NORMAL);
     }
 
     public synchronized void insertActiveBounty(
@@ -193,13 +196,36 @@ public final class BountyDatabase implements AutoCloseable {
         ItemStack item,
         long now
     ) throws SQLException {
+        insertActiveBounty(targetUuid, targetName, placerUuid, placerName, item, now, BountyVisibility.NORMAL);
+    }
+
+    public synchronized void insertActiveBounty(
+        KnownPlayer target,
+        UUID placerUuid,
+        String placerName,
+        ItemStack item,
+        long now,
+        BountyVisibility visibility
+    ) throws SQLException {
+        insertActiveBounty(target.uuid(), target.name(), placerUuid, placerName, item, now, visibility);
+    }
+
+    public synchronized void insertActiveBounty(
+        UUID targetUuid,
+        String targetName,
+        UUID placerUuid,
+        String placerName,
+        ItemStack item,
+        long now,
+        BountyVisibility visibility
+    ) throws SQLException {
         byte[] encoded = encode(item);
         try (PreparedStatement statement = connection.prepareStatement("""
             INSERT INTO bounties(
                 target_uuid, target_name, placer_uuid, placer_name,
-                item_blob, item_type, item_amount, state, created_at
+                item_blob, item_type, item_amount, visibility, state, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """)) {
             statement.setString(1, targetUuid.toString());
             statement.setString(2, targetName);
@@ -208,8 +234,9 @@ public final class BountyDatabase implements AutoCloseable {
             statement.setBytes(5, encoded);
             statement.setString(6, item.getType().name());
             statement.setInt(7, item.getAmount());
-            statement.setString(8, RewardState.ACTIVE.name());
-            statement.setLong(9, now);
+            statement.setString(8, visibility.name());
+            statement.setString(9, RewardState.ACTIVE.name());
+            statement.setLong(10, now);
             statement.executeUpdate();
         }
     }
@@ -426,9 +453,9 @@ public final class BountyDatabase implements AutoCloseable {
             try (PreparedStatement insert = connection.prepareStatement("""
                 INSERT INTO bounties(
                     target_uuid, target_name, placer_uuid, placer_name,
-                    item_blob, item_type, item_amount, state, created_at
+                    item_blob, item_type, item_amount, visibility, state, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
                 for (ItemStack template : templates) {
                     ItemStack item = template.clone();
@@ -439,8 +466,9 @@ public final class BountyDatabase implements AutoCloseable {
                     insert.setBytes(5, encode(item));
                     insert.setString(6, item.getType().name());
                     insert.setInt(7, item.getAmount());
-                    insert.setString(8, RewardState.ACTIVE.name());
-                    insert.setLong(9, now);
+                    insert.setString(8, BountyVisibility.NORMAL.name());
+                    insert.setString(9, RewardState.ACTIVE.name());
+                    insert.setLong(10, now);
                     insert.addBatch();
                 }
                 insert.executeBatch();
@@ -549,6 +577,48 @@ public final class BountyDatabase implements AutoCloseable {
             statement.setString(2, claimantUuid.toString());
             return readRewards(statement);
         }
+    }
+
+    public synchronized Optional<BountyReward> findClaimableReward(long rewardId, UUID targetUuid, UUID claimantUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT *
+            FROM bounties
+            WHERE id = ?
+              AND target_uuid = ?
+              AND claimant_uuid = ?
+              AND state = 'CLAIMABLE'
+            LIMIT 1
+            """)) {
+            statement.setLong(1, rewardId);
+            statement.setString(2, targetUuid.toString());
+            statement.setString(3, claimantUuid.toString());
+            List<BountyReward> rewards = readRewards(statement);
+            return rewards.isEmpty() ? Optional.empty() : Optional.of(rewards.getFirst());
+        }
+    }
+
+    public synchronized List<BountyReward> listClaimableRewardsByIds(List<Long> rewardIds, UUID targetUuid, UUID claimantUuid) throws SQLException {
+        if (rewardIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<BountyReward> rewards = new ArrayList<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT *
+            FROM bounties
+            WHERE id = ?
+              AND target_uuid = ?
+              AND claimant_uuid = ?
+              AND state = 'CLAIMABLE'
+            """)) {
+            for (long rewardId : rewardIds) {
+                statement.setLong(1, rewardId);
+                statement.setString(2, targetUuid.toString());
+                statement.setString(3, claimantUuid.toString());
+                rewards.addAll(readRewards(statement));
+            }
+        }
+        return rewards;
     }
 
     public synchronized boolean markRewardsDelivering(List<Long> rewardIds, UUID claimantUuid) throws SQLException {
@@ -662,6 +732,21 @@ public final class BountyDatabase implements AutoCloseable {
         }
     }
 
+    private void addColumnIfMissing(String tableName, String columnName, String definition) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery("PRAGMA table_info(" + tableName + ")")) {
+            while (resultSet.next()) {
+                if (columnName.equalsIgnoreCase(resultSet.getString("name"))) {
+                    return;
+                }
+            }
+        }
+
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + definition);
+        }
+    }
+
     private KnownPlayer readKnownPlayer(ResultSet resultSet) throws SQLException {
         return new KnownPlayer(
             UUID.fromString(resultSet.getString("uuid")),
@@ -765,10 +850,22 @@ public final class BountyDatabase implements AutoCloseable {
                     UUID.fromString(resultSet.getString("placer_uuid")),
                     resultSet.getString("placer_name"),
                     decode(resultSet.getBytes("item_blob")),
-                    RewardState.valueOf(resultSet.getString("state"))
+                    RewardState.valueOf(resultSet.getString("state")),
+                    readVisibility(resultSet.getString("visibility"))
                 ));
             }
             return rewards;
+        }
+    }
+
+    private BountyVisibility readVisibility(String rawVisibility) {
+        if (rawVisibility == null || rawVisibility.isBlank()) {
+            return BountyVisibility.NORMAL;
+        }
+        try {
+            return BountyVisibility.valueOf(rawVisibility);
+        } catch (IllegalArgumentException exception) {
+            return BountyVisibility.NORMAL;
         }
     }
 

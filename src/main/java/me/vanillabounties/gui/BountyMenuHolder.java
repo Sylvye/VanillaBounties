@@ -5,7 +5,9 @@ import org.bukkit.inventory.InventoryHolder;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -21,6 +23,7 @@ public final class BountyMenuHolder implements InventoryHolder {
     private final @Nullable UUID targetUuid;
     private final String targetName;
     private final Map<Integer, UUID> targetSlots = new HashMap<>();
+    private final Map<Integer, List<Long>> rewardSlots = new HashMap<>();
     private Inventory inventory;
 
     public BountyMenuHolder(Type type, UUID viewerUuid, int page, @Nullable UUID targetUuid, String targetName) {
@@ -53,6 +56,14 @@ public final class BountyMenuHolder implements InventoryHolder {
 
     public Map<Integer, UUID> targetSlots() {
         return targetSlots;
+    }
+
+    public Map<Integer, List<Long>> rewardSlots() {
+        return rewardSlots;
+    }
+
+    public void setRewardSlot(int slot, List<Long> rewardIds) {
+        rewardSlots.put(slot, new ArrayList<>(rewardIds));
     }
 
     public void setInventory(Inventory inventory) {

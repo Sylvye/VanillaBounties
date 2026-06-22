@@ -4,6 +4,7 @@ import me.vanillabounties.BukkitTestSupport;
 import me.vanillabounties.model.AutoBountyFolder;
 import me.vanillabounties.model.AutoBountyTemplate;
 import me.vanillabounties.model.BountyReward;
+import me.vanillabounties.model.BountyVisibility;
 import me.vanillabounties.model.KnownPlayer;
 import me.vanillabounties.model.RewardState;
 import org.bukkit.Material;
@@ -51,6 +52,25 @@ class BountyDatabaseTest extends BukkitTestSupport {
     }
 
     @Test
+    void findsOneClaimableRewardByIdTargetAndClaimant() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            KnownPlayer target = new KnownPlayer(UUID.randomUUID(), "Target", 100L);
+            UUID placer = UUID.randomUUID();
+            UUID killer = UUID.randomUUID();
+            UUID otherKiller = UUID.randomUUID();
+
+            database.insertActiveBounty(target, placer, "Placer", new ItemStack(Material.DIAMOND, 3), 200L);
+            database.markActiveRewardsClaimable(target.uuid(), killer, "Killer", 300L);
+
+            BountyReward reward = database.listClaimableRewards(target.uuid(), killer).getFirst();
+
+            assertTrue(database.findClaimableReward(reward.id(), target.uuid(), killer).isPresent());
+            assertTrue(database.findClaimableReward(reward.id(), UUID.randomUUID(), killer).isEmpty());
+            assertTrue(database.findClaimableReward(reward.id(), target.uuid(), otherKiller).isEmpty());
+        }
+    }
+
+    @Test
     void boardShowsActiveAndViewerClaimableRewardsOnly() throws Exception {
         try (BountyDatabase database = openDatabase()) {
             KnownPlayer target = new KnownPlayer(UUID.randomUUID(), "Target", 100L);
@@ -88,6 +108,24 @@ class BountyDatabaseTest extends BukkitTestSupport {
             assertEquals(1, database.clearActiveBounties());
             assertTrue(database.listVisibleRewards(secondTarget.uuid(), killer).isEmpty());
             assertEquals(2, database.listClaimableRewards(firstTarget.uuid(), killer).size());
+        }
+    }
+
+    @Test
+    void activeBountiesDefaultToNormalVisibilityAndCanStoreSilentOrPublic() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            KnownPlayer target = new KnownPlayer(UUID.randomUUID(), "Target", 100L);
+            UUID placer = UUID.randomUUID();
+
+            database.insertActiveBounty(target, placer, "Placer", new ItemStack(Material.DIAMOND, 1), 200L);
+            database.insertActiveBounty(target, placer, "Placer", new ItemStack(Material.EMERALD, 1), 201L, BountyVisibility.SILENT);
+            database.insertActiveBounty(target, placer, "Placer", new ItemStack(Material.GOLD_INGOT, 1), 202L, BountyVisibility.PUBLIC);
+
+            List<BountyReward> rewards = database.listVisibleRewards(target.uuid(), UUID.randomUUID());
+
+            assertEquals(BountyVisibility.NORMAL, rewards.get(0).visibility());
+            assertEquals(BountyVisibility.SILENT, rewards.get(1).visibility());
+            assertEquals(BountyVisibility.PUBLIC, rewards.get(2).visibility());
         }
     }
 

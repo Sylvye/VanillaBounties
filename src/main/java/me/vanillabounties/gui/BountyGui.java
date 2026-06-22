@@ -95,7 +95,12 @@ public final class BountyGui {
         int start = clampedPage * PAGE_SIZE;
         int end = Math.min(start + PAGE_SIZE, previews.size());
         for (int index = start; index < end; index++) {
-            inventory.setItem(index - start, createRewardPreview(previews.get(index)));
+            int slot = index - start;
+            GroupedRewardPreview preview = previews.get(index);
+            inventory.setItem(slot, createRewardPreview(preview));
+            if (!preview.claimableRewardIds().isEmpty()) {
+                holder.setRewardSlot(slot, preview.claimableRewardIds());
+            }
         }
 
         inventory.setItem(BACK_SLOT, namedItem(Material.ARROW, Component.text("Back", NamedTextColor.YELLOW), List.of()));
@@ -172,6 +177,14 @@ public final class BountyGui {
             BountyService.ClaimResult result = bountyService.claimRewards(viewer, targetUuid);
             viewer.sendMessage(result.message());
             openDetail(viewer, targetUuid, holder.targetName(), holder.page());
+            return;
+        }
+
+        List<Long> rewardIds = holder.rewardSlots().get(rawSlot);
+        if (rewardIds != null && !rewardIds.isEmpty()) {
+            BountyService.ClaimResult result = bountyService.claimRewards(viewer, targetUuid, rewardIds);
+            viewer.sendMessage(result.message());
+            openDetail(viewer, targetUuid, holder.targetName(), holder.page());
         }
     }
 
@@ -225,12 +238,13 @@ public final class BountyGui {
 
         List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
         lore.add(Component.empty());
-        lore.add(Component.text("Placed by: " + reward.placerDisplay(), NamedTextColor.GRAY));
+        lore.add(Component.text("Placed by: ", NamedTextColor.GRAY).append(reward.placerDisplay()));
         if (reward.rewardCount() > 1 || reward.totalAmount() != item.getAmount()) {
             lore.add(Component.text("Total: " + reward.totalAmount() + " across " + reward.rewardCount() + " reward stack(s)", NamedTextColor.GRAY));
         }
         if (reward.state() == RewardState.CLAIMABLE) {
             lore.add(Component.text("Claimable by you", NamedTextColor.GREEN));
+            lore.add(Component.text("Click to claim this displayed stack.", NamedTextColor.DARK_GRAY));
         } else {
             lore.add(Component.text("Active bounty reward", NamedTextColor.YELLOW));
         }

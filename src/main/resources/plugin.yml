@@ -9,7 +9,7 @@ libraries:
 commands:
   bounty:
     description: Place or clear item bounties.
-    usage: /bounty <player>|clear <all|player>
+    usage: /bounty <player> [silent|public]|clear <all|player>
   bounties:
     description: Open the bounty board.
     usage: /bounties

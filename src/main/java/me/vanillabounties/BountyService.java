@@ -4,6 +4,7 @@ import me.vanillabounties.model.BountyReward;
 import me.vanillabounties.model.BountySummary;
 import me.vanillabounties.model.AutoBountyFolder;
 import me.vanillabounties.model.AutoBountyTemplate;
+import me.vanillabounties.model.BountyVisibility;
 import me.vanillabounties.model.KnownPlayer;
 import me.vanillabounties.storage.BountyDatabase;
 import me.vanillabounties.util.InventoryPlanner;
@@ -62,6 +63,10 @@ public final class BountyService {
     }
 
     public PlaceResult placeBounty(Player placer, KnownPlayer target) {
+        return placeBounty(placer, target, BountyVisibility.NORMAL);
+    }
+
+    public PlaceResult placeBounty(Player placer, KnownPlayer target, BountyVisibility visibility) {
         if (placer.getUniqueId().equals(target.uuid())) {
             return PlaceResult.failure(Component.text("You cannot place a bounty on yourself.", NamedTextColor.RED));
         }
@@ -75,7 +80,10 @@ public final class BountyService {
         placer.getInventory().setItemInMainHand(null);
 
         try {
-            database.insertActiveBounty(target, placer.getUniqueId(), placer.getName(), escrowed, System.currentTimeMillis());
+            database.insertActiveBounty(target, placer.getUniqueId(), placer.getName(), escrowed, System.currentTimeMillis(), visibility);
+            if (visibility == BountyVisibility.PUBLIC) {
+                plugin.getServer().sendMessage(publicBountyMessage(placer, target, escrowed));
+            }
             return PlaceResult.success(Component.text("Placed ")
                 .color(NamedTextColor.GREEN)
                 .append(Component.text(escrowed.getAmount() + "x " + escrowed.getType().name(), NamedTextColor.YELLOW))
@@ -85,6 +93,22 @@ public final class BountyService {
             plugin.getLogger().log(Level.SEVERE, "Failed to persist bounty; item returned to " + placer.getName(), exception);
             return PlaceResult.failure(Component.text("The bounty could not be saved. Your item was returned.", NamedTextColor.RED));
         }
+    }
+
+    private Component publicBountyMessage(Player placer, KnownPlayer target, ItemStack item) {
+        return Component.text("[Bounty] ", NamedTextColor.GOLD)
+            .append(Component.text(placer.getName(), NamedTextColor.YELLOW))
+            .append(Component.text(" placed ", NamedTextColor.GRAY))
+            .append(itemComponent(item))
+            .append(Component.text(" on ", NamedTextColor.GRAY))
+            .append(Component.text(target.name(), NamedTextColor.RED))
+            .append(Component.text(".", NamedTextColor.GRAY));
+    }
+
+    private Component itemComponent(ItemStack item) {
+        return Component.text(item.getAmount() + "x ", NamedTextColor.YELLOW)
+            .append(item.effectiveName().colorIfAbsent(NamedTextColor.YELLOW))
+            .hoverEvent(item.asHoverEvent(showItem -> showItem));
     }
 
     public int assignRewardsToKiller(Player victim, Player killer) {
@@ -221,6 +245,55 @@ public final class BountyService {
             return ClaimResult.failure(Component.text("Claim failed before delivery. Try again.", NamedTextColor.RED));
         } catch (RuntimeException exception) {
             plugin.getLogger().log(Level.SEVERE, "Failed while delivering bounty rewards to " + claimant.getName(), exception);
+            return ClaimResult.failure(Component.text("Claim failed during delivery. Contact an admin.", NamedTextColor.RED));
+        }
+    }
+
+    public ClaimResult claimReward(Player claimant, UUID targetUuid, long rewardId) {
+        return claimRewards(claimant, targetUuid, List.of(rewardId));
+    }
+
+    public ClaimResult claimRewards(Player claimant, UUID targetUuid, List<Long> rewardIds) {
+        if (rewardIds.isEmpty()) {
+            return ClaimResult.failure(Component.text("No rewards were selected to claim.", NamedTextColor.RED));
+        }
+
+        List<BountyReward> rewards;
+        try {
+            rewards = database.listClaimableRewardsByIds(rewardIds, targetUuid, claimant.getUniqueId());
+            if (rewards.size() != rewardIds.size()) {
+                return ClaimResult.failure(Component.text("One or more rewards are no longer claimable. Reopen /bounties.", NamedTextColor.RED));
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().log(Level.SEVERE, "Failed to read selected claimable rewards for " + claimant.getName(), exception);
+            return ClaimResult.failure(Component.text("Claim failed because rewards could not be loaded.", NamedTextColor.RED));
+        }
+
+        List<ItemStack> items = rewards.stream().map(BountyReward::item).toList();
+        Optional<ItemStack[]> plannedContents = InventoryPlanner.planStorageContents(claimant.getInventory().getStorageContents(), items);
+        if (plannedContents.isEmpty()) {
+            return ClaimResult.failure(Component.text("Make enough inventory space to claim that reward stack.", NamedTextColor.RED));
+        }
+
+        try {
+            boolean locked = database.markRewardsDelivering(rewardIds, claimant.getUniqueId());
+            if (!locked) {
+                return ClaimResult.failure(Component.text("Those rewards were already claimed or changed. Reopen /bounties.", NamedTextColor.RED));
+            }
+
+            claimant.getInventory().setStorageContents(plannedContents.get());
+            database.markRewardsClaimed(rewardIds, claimant.getUniqueId(), System.currentTimeMillis());
+            return ClaimResult.success(Component.text("Claimed " + rewards.size() + " bounty reward(s).", NamedTextColor.GREEN));
+        } catch (SQLException exception) {
+            plugin.getLogger().log(Level.SEVERE, "Failed to claim selected bounty rewards for " + claimant.getName(), exception);
+            try {
+                database.resetDeliveringRewards(rewardIds, claimant.getUniqueId());
+            } catch (SQLException resetException) {
+                plugin.getLogger().log(Level.SEVERE, "Failed to reset undelivered bounty rewards", resetException);
+            }
+            return ClaimResult.failure(Component.text("Claim failed before delivery. Try again.", NamedTextColor.RED));
+        } catch (RuntimeException exception) {
+            plugin.getLogger().log(Level.SEVERE, "Failed while delivering selected bounty rewards to " + claimant.getName(), exception);
             return ClaimResult.failure(Component.text("Claim failed during delivery. Contact an admin.", NamedTextColor.RED));
         }
     }

@@ -11,6 +11,7 @@ public record BountyReward(
     UUID placerUuid,
     String placerName,
     ItemStack item,
-    RewardState state
+    RewardState state,
+    BountyVisibility visibility
 ) {
 }
