@@ -1,6 +1,7 @@
 package me.vanillabounties.command;
 
 import me.vanillabounties.BountyService;
+import me.vanillabounties.gui.BountyConfirmationGui;
 import me.vanillabounties.model.BountyVisibility;
 import me.vanillabounties.model.KnownPlayer;
 import net.kyori.adventure.text.Component;
@@ -19,9 +20,11 @@ import java.util.Optional;
 
 public final class BountyCommand implements CommandExecutor, TabCompleter {
     private final BountyService bountyService;
+    private final BountyConfirmationGui bountyConfirmationGui;
 
-    public BountyCommand(BountyService bountyService) {
+    public BountyCommand(BountyService bountyService, BountyConfirmationGui bountyConfirmationGui) {
         this.bountyService = bountyService;
+        this.bountyConfirmationGui = bountyConfirmationGui;
     }
 
     @Override
@@ -58,7 +61,7 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args[0].equalsIgnoreCase("clear")) {
-            player.sendMessage(Component.text("Usage: /bounty clear <all|player>", NamedTextColor.RED));
+            player.sendMessage(Component.text("Usage: /bounty clear <all|player> [refund|delete]", NamedTextColor.RED));
             return true;
         }
 
@@ -68,8 +71,7 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        BountyService.PlaceResult result = bountyService.placeBounty(player, target.get(), visibility);
-        player.sendMessage(result.message());
+        bountyConfirmationGui.open(player, target.get(), visibility);
         return true;
     }
 
@@ -79,15 +81,26 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (args.length != 2) {
-            sender.sendMessage(Component.text("Usage: /bounty clear <all|player>", NamedTextColor.RED));
+        if (args.length < 2 || args.length > 3) {
+            sender.sendMessage(Component.text("Usage: /bounty clear <all|player> [refund|delete]", NamedTextColor.RED));
             return true;
         }
 
+        BountyService.ClearMode mode = BountyService.ClearMode.DELETE;
+        if (args.length == 3) {
+            if (args[2].equalsIgnoreCase("refund")) {
+                mode = BountyService.ClearMode.REFUND;
+            } else if (!args[2].equalsIgnoreCase("delete")) {
+                sender.sendMessage(Component.text("Usage: /bounty clear <all|player> [refund|delete]", NamedTextColor.RED));
+                return true;
+            }
+        }
+
         try {
+            BountyService.ClearResult result;
             if (args[1].equalsIgnoreCase("all")) {
-                int cleared = bountyService.clearAllActiveBounties();
-                sender.sendMessage(Component.text("Cleared " + cleared + " active bounty reward(s).", NamedTextColor.GREEN));
+                result = bountyService.clearAllActiveBounties(mode);
+                sendClearResult(sender, result, null);
                 return true;
             }
 
@@ -97,13 +110,34 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
                 return true;
             }
 
-            int cleared = bountyService.clearActiveBounties(target.get().uuid());
-            sender.sendMessage(Component.text("Cleared " + cleared + " active bounty reward(s) for " + target.get().name() + ".", NamedTextColor.GREEN));
+            result = bountyService.clearActiveBounties(target.get().uuid(), mode);
+            sendClearResult(sender, result, target.get().name());
             return true;
         } catch (SQLException exception) {
             sender.sendMessage(Component.text("Could not clear active bounties.", NamedTextColor.RED));
             return true;
         }
+    }
+
+    private void sendClearResult(CommandSender sender, BountyService.ClearResult result, String targetName) {
+        if (!result.unavailablePlacers().isEmpty()) {
+            sender.sendMessage(Component.text(
+                "Could not refund because these bounty placers are offline: " + String.join(", ", result.unavailablePlacers()) + ". Use delete to remove permanently.",
+                NamedTextColor.RED
+            ));
+            return;
+        }
+
+        String targetSuffix = targetName == null ? "" : " for " + targetName;
+        if (result.refunded() > 0) {
+            sender.sendMessage(Component.text(
+                "Cleared " + result.cleared() + " active bounty reward(s)" + targetSuffix + " and refunded " + result.refunded() + ".",
+                NamedTextColor.GREEN
+            ));
+            return;
+        }
+
+        sender.sendMessage(Component.text("Cleared " + result.cleared() + " active bounty reward(s)" + targetSuffix + ".", NamedTextColor.GREEN));
     }
 
     @Override
@@ -136,6 +170,18 @@ public final class BountyCommand implements CommandExecutor, TabCompleter {
                 }
             }
             return completions;
+        }
+
+        if (args.length == 3 && args[0].equalsIgnoreCase("clear") && sender.hasPermission("vanillabounties.admin")) {
+            String prefix = args[2].toLowerCase(Locale.ROOT);
+            List<String> modes = new ArrayList<>();
+            if ("refund".startsWith(prefix)) {
+                modes.add("refund");
+            }
+            if ("delete".startsWith(prefix)) {
+                modes.add("delete");
+            }
+            return modes;
         }
 
         if (args.length == 2 && sender.hasPermission("vanillabounties.use")) {

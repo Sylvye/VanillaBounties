@@ -3,7 +3,9 @@ package me.vanillabounties.gui;
 import me.vanillabounties.BountyService;
 import me.vanillabounties.model.BountyReward;
 import me.vanillabounties.model.BountySummary;
+import me.vanillabounties.model.PluginSettings;
 import me.vanillabounties.model.RewardState;
+import me.vanillabounties.model.TrackingState;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
@@ -19,6 +21,7 @@ import org.bukkit.inventory.meta.SkullMeta;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.logging.Level;
 
@@ -27,7 +30,9 @@ public final class BountyGui {
     private static final int PAGE_SIZE = 45;
     private static final int PREVIOUS_SLOT = 45;
     private static final int BACK_SLOT = 45;
+    private static final int TRACK_SLOT = 47;
     private static final int CLAIM_SLOT = 49;
+    private static final int HUNT_SLOT = 51;
     private static final int NEXT_SLOT = 53;
 
     private final BountyService bountyService;
@@ -77,8 +82,12 @@ public final class BountyGui {
 
     public void openDetail(Player viewer, UUID targetUuid, String targetName, int page) {
         List<BountyReward> rewards;
+        PluginSettings settings;
+        Optional<TrackingState> trackingState;
         try {
             rewards = bountyService.listRewards(targetUuid, viewer.getUniqueId());
+            settings = bountyService.getPluginSettings();
+            trackingState = bountyService.getTrackingState(targetUuid);
         } catch (SQLException exception) {
             viewer.sendMessage(Component.text("Could not load that bounty.", NamedTextColor.RED));
             Bukkit.getLogger().log(Level.SEVERE, "Failed to load bounty detail", exception);
@@ -104,6 +113,19 @@ public final class BountyGui {
         }
 
         inventory.setItem(BACK_SLOT, namedItem(Material.ARROW, Component.text("Back", NamedTextColor.YELLOW), List.of()));
+        boolean hasActiveRewards = rewards.stream().anyMatch(reward -> reward.state() == RewardState.ACTIVE);
+        if (trackingState.isPresent()) {
+            inventory.setItem(TRACK_SLOT, createTrackingInfoItem(trackingState.get()));
+            if (settings.trackingCompassEnabled()) {
+                inventory.setItem(HUNT_SLOT, createHuntItem(bountyService.isHunting(viewer, targetUuid)));
+            }
+        } else if (settings.trackingEnabled() && hasActiveRewards) {
+            inventory.setItem(TRACK_SLOT, namedItem(settings.trackingItem(), Component.text("Track Bounty", NamedTextColor.AQUA),
+                List.of(
+                    Component.text("Consumes 1x " + settings.trackingItem().name() + ".", NamedTextColor.GRAY),
+                    Component.text("Reveals public coordinates every " + formatDuration(settings.trackingPeriodMillis()) + ".", NamedTextColor.GRAY)
+                )));
+        }
         if (rewards.stream().anyMatch(reward -> reward.state() == RewardState.CLAIMABLE)) {
             inventory.setItem(CLAIM_SLOT, namedItem(Material.CHEST, Component.text("Claim All", NamedTextColor.GREEN),
                 List.of(Component.text("Claims only if every reward fits.", NamedTextColor.GRAY))));
@@ -171,6 +193,34 @@ public final class BountyGui {
         }
         if (rawSlot == NEXT_SLOT) {
             openDetail(viewer, targetUuid, holder.targetName(), holder.page() + 1);
+            return;
+        }
+        if (rawSlot == TRACK_SLOT) {
+            try {
+                if (bountyService.getTrackingState(targetUuid).isPresent()) {
+                    return;
+                }
+            } catch (SQLException exception) {
+                viewer.sendMessage(Component.text("Could not refresh tracking state.", NamedTextColor.RED));
+                return;
+            }
+            BountyService.TrackingResult result = bountyService.enablePublicTracking(viewer, targetUuid, holder.targetName());
+            viewer.sendMessage(result.message());
+            openDetail(viewer, targetUuid, holder.targetName(), holder.page());
+            return;
+        }
+        if (rawSlot == HUNT_SLOT) {
+            try {
+                if (bountyService.getTrackingState(targetUuid).isEmpty() || !bountyService.getPluginSettings().trackingCompassEnabled()) {
+                    return;
+                }
+            } catch (SQLException exception) {
+                viewer.sendMessage(Component.text("Could not refresh tracking state.", NamedTextColor.RED));
+                return;
+            }
+            BountyService.HuntResult result = bountyService.toggleHunt(viewer, targetUuid, holder.targetName());
+            viewer.sendMessage(result.message());
+            openDetail(viewer, targetUuid, holder.targetName(), holder.page());
             return;
         }
         if (rawSlot == CLAIM_SLOT) {
@@ -252,6 +302,33 @@ public final class BountyGui {
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         item.setItemMeta(meta);
         return item;
+    }
+
+    private ItemStack createTrackingInfoItem(TrackingState state) {
+        List<Component> lore = new ArrayList<>();
+        if (state.hasLocation()) {
+            lore.add(Component.text("Last known: " + bountyService.formatLocation(state), NamedTextColor.YELLOW));
+        } else {
+            lore.add(Component.text("No coordinates revealed yet.", NamedTextColor.GRAY));
+        }
+        lore.add(Component.text("Enabled by: " + state.enabledByName(), NamedTextColor.GRAY));
+        return namedItem(Material.SPYGLASS, Component.text("Public Tracking Active", NamedTextColor.AQUA), lore);
+    }
+
+    private ItemStack createHuntItem(boolean hunting) {
+        return namedItem(hunting ? Material.LIME_DYE : Material.COMPASS,
+            Component.text(hunting ? "Stop Hunt" : "Hunt", hunting ? NamedTextColor.YELLOW : NamedTextColor.GREEN),
+            List.of(Component.text(hunting ? "Click to stop tracking this bounty." : "Click to bind a hunt compass.", NamedTextColor.GRAY)));
+    }
+
+    private String formatDuration(long millis) {
+        if (millis % 60_000L == 0) {
+            return (millis / 60_000L) + "m";
+        }
+        if (millis % 1_000L == 0) {
+            return (millis / 1_000L) + "s";
+        }
+        return millis + "ms";
     }
 
     private ItemStack namedItem(Material material, Component name, List<Component> lore) {

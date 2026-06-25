@@ -5,8 +5,11 @@ import me.vanillabounties.model.AutoBountyFolder;
 import me.vanillabounties.model.AutoBountyTemplate;
 import me.vanillabounties.model.BountyReward;
 import me.vanillabounties.model.BountyVisibility;
+import me.vanillabounties.model.HuntHudMode;
 import me.vanillabounties.model.KnownPlayer;
+import me.vanillabounties.model.PluginSettings;
 import me.vanillabounties.model.RewardState;
+import me.vanillabounties.model.TrackingState;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 import org.junit.jupiter.api.Test;
@@ -153,6 +156,68 @@ class BountyDatabaseTest extends BukkitTestSupport {
 
             database.setAutoBountiesEnabled(true);
             assertTrue(database.autoBountiesEnabled());
+        }
+    }
+
+    @Test
+    void pluginSettingsDefaultAndPersist() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PluginSettings defaults = database.getPluginSettings();
+            assertTrue(defaults.autoBountiesEnabled());
+            assertTrue(defaults.countNakedKills());
+            assertEquals(0L, defaults.spawnKillPeriodMillis());
+            assertTrue(defaults.countRepeatKills());
+            assertFalse(defaults.allowSelfBounties());
+            assertEquals(Material.RECOVERY_COMPASS, defaults.trackingItem());
+            assertEquals(300_000L, defaults.trackingPeriodMillis());
+            assertEquals(5_000L, defaults.trackingGlowingDurationMillis());
+            assertTrue(defaults.trackingCompassEnabled());
+            assertEquals(HuntHudMode.ACTION_BAR, defaults.huntHud());
+
+            database.setCountNakedKills(false);
+            database.setSpawnKillPeriodMillis(12_000L);
+            database.setCountRepeatKills(false);
+            database.setAllowSelfBounties(true);
+            database.setTrackingItem(Material.ENDER_EYE);
+            database.setTrackingPeriodMillis(60_000L);
+            database.setTrackingGlowingDurationMillis(2_000L);
+            database.setTrackingCompassEnabled(false);
+            database.setHuntHud(HuntHudMode.CHAT);
+
+            PluginSettings updated = database.getPluginSettings();
+            assertFalse(updated.countNakedKills());
+            assertEquals(12_000L, updated.spawnKillPeriodMillis());
+            assertFalse(updated.countRepeatKills());
+            assertTrue(updated.allowSelfBounties());
+            assertEquals(Material.ENDER_EYE, updated.trackingItem());
+            assertEquals(60_000L, updated.trackingPeriodMillis());
+            assertEquals(2_000L, updated.trackingGlowingDurationMillis());
+            assertFalse(updated.trackingCompassEnabled());
+            assertEquals(HuntHudMode.CHAT, updated.huntHud());
+        }
+    }
+
+    @Test
+    void trackingStatePersistsLocationAndClearsWithActiveBounty() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            KnownPlayer target = new KnownPlayer(UUID.randomUUID(), "Target", 100L);
+            UUID placer = UUID.randomUUID();
+            UUID tracker = UUID.randomUUID();
+            database.insertActiveBounty(target, placer, "Placer", new ItemStack(Material.DIAMOND, 1), 200L);
+
+            assertTrue(database.enableTracking(target.uuid(), target.name(), tracker, "Tracker", 300L));
+            assertFalse(database.enableTracking(target.uuid(), target.name(), tracker, "Tracker", 301L));
+            database.updateTrackingLocation(target.uuid(), "world", 10, 64, -3, 400L);
+
+            TrackingState state = database.getTrackingState(target.uuid()).orElseThrow();
+            assertEquals("world", state.worldName());
+            assertEquals(10, state.x());
+            assertEquals(64, state.y());
+            assertEquals(-3, state.z());
+            assertEquals(400L, state.lastRevealedAt());
+
+            assertEquals(1, database.clearActiveBounties(target.uuid()));
+            assertTrue(database.getTrackingState(target.uuid()).isEmpty());
         }
     }
 

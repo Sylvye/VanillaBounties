@@ -5,7 +5,10 @@ import me.vanillabounties.model.BountySummary;
 import me.vanillabounties.model.AutoBountyFolder;
 import me.vanillabounties.model.AutoBountyTemplate;
 import me.vanillabounties.model.KnownPlayer;
+import me.vanillabounties.model.HuntHudMode;
+import me.vanillabounties.model.PluginSettings;
 import me.vanillabounties.model.RewardState;
+import me.vanillabounties.model.TrackingState;
 import me.vanillabounties.model.BountyVisibility;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
@@ -27,6 +30,18 @@ public final class BountyDatabase implements AutoCloseable {
     public static final int ON_KILL_THRESHOLD = 0;
     public static final UUID SERVER_PLACER_UUID = new UUID(0L, 0L);
     public static final String SERVER_PLACER_NAME = "Server";
+
+    private static final String SETTING_AUTO_BOUNTIES_ENABLED = "auto_bounties_enabled";
+    private static final String LEGACY_SETTING_AUTO_BOUNTIES_ENABLED = "enabled";
+    private static final String SETTING_COUNT_NAKED_KILLS = "count_naked_kills";
+    private static final String SETTING_SPAWN_KILL_PERIOD_MILLIS = "spawn_kill_period_millis";
+    private static final String SETTING_COUNT_REPEAT_KILLS = "count_repeat_kills";
+    private static final String SETTING_ALLOW_SELF_BOUNTIES = "allow_self_bounties";
+    private static final String SETTING_TRACKING_ITEM = "tracking_item";
+    private static final String SETTING_TRACKING_PERIOD_MILLIS = "tracking_period_millis";
+    private static final String SETTING_TRACKING_GLOWING_DURATION_MILLIS = "tracking_glowing_duration_millis";
+    private static final String SETTING_TRACKING_COMPASS_ENABLED = "tracking_compass_enabled";
+    private static final String SETTING_HUNT_HUD = "hunt_hud";
 
     private final Connection connection;
 
@@ -94,6 +109,13 @@ public final class BountyDatabase implements AutoCloseable {
                 )
                 """);
             statement.execute("""
+                CREATE TABLE IF NOT EXISTS kill_streak_victims (
+                    killer_uuid TEXT NOT NULL,
+                    victim_uuid TEXT NOT NULL,
+                    PRIMARY KEY(killer_uuid, victim_uuid)
+                )
+                """);
+            statement.execute("""
                 CREATE TABLE IF NOT EXISTS auto_bounty_folders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     threshold INTEGER NOT NULL UNIQUE,
@@ -117,6 +139,20 @@ public final class BountyDatabase implements AutoCloseable {
             statement.execute("""
                 CREATE INDEX IF NOT EXISTS idx_auto_bounty_items_folder
                 ON auto_bounty_items(folder_id, slot)
+                """);
+            statement.execute("""
+                CREATE TABLE IF NOT EXISTS public_tracking (
+                    target_uuid TEXT PRIMARY KEY NOT NULL,
+                    target_name TEXT NOT NULL,
+                    enabled_by_uuid TEXT NOT NULL,
+                    enabled_by_name TEXT NOT NULL,
+                    enabled_at INTEGER NOT NULL,
+                    last_world TEXT,
+                    last_x INTEGER NOT NULL DEFAULT 0,
+                    last_y INTEGER NOT NULL DEFAULT 0,
+                    last_z INTEGER NOT NULL DEFAULT 0,
+                    last_revealed_at INTEGER NOT NULL DEFAULT 0
+                )
                 """);
         }
         addColumnIfMissing("bounties", "visibility", "TEXT NOT NULL DEFAULT 'NORMAL'");
@@ -242,17 +278,11 @@ public final class BountyDatabase implements AutoCloseable {
     }
 
     public synchronized boolean autoBountiesEnabled() throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
-            SELECT value
-            FROM auto_bounty_settings
-            WHERE key = 'enabled'
-            """);
-             ResultSet resultSet = statement.executeQuery()) {
-            return !resultSet.next() || Boolean.parseBoolean(resultSet.getString("value"));
-        }
+        return readBooleanSetting(SETTING_AUTO_BOUNTIES_ENABLED, true);
     }
 
     public synchronized void setAutoBountiesEnabled(boolean enabled) throws SQLException {
+        setSetting(SETTING_AUTO_BOUNTIES_ENABLED, Boolean.toString(enabled));
         try (PreparedStatement statement = connection.prepareStatement("""
             INSERT INTO auto_bounty_settings(key, value)
             VALUES ('enabled', ?)
@@ -261,6 +291,57 @@ public final class BountyDatabase implements AutoCloseable {
             statement.setString(1, Boolean.toString(enabled));
             statement.executeUpdate();
         }
+    }
+
+    public synchronized PluginSettings getPluginSettings() throws SQLException {
+        return new PluginSettings(
+            readBooleanSetting(SETTING_AUTO_BOUNTIES_ENABLED, true),
+            readBooleanSetting(SETTING_COUNT_NAKED_KILLS, true),
+            readLongSetting(SETTING_SPAWN_KILL_PERIOD_MILLIS, 0L),
+            readBooleanSetting(SETTING_COUNT_REPEAT_KILLS, true),
+            readBooleanSetting(SETTING_ALLOW_SELF_BOUNTIES, false),
+            readMaterialSetting(SETTING_TRACKING_ITEM, Material.RECOVERY_COMPASS),
+            readLongSetting(SETTING_TRACKING_PERIOD_MILLIS, 300_000L),
+            readLongSetting(SETTING_TRACKING_GLOWING_DURATION_MILLIS, 5_000L),
+            readBooleanSetting(SETTING_TRACKING_COMPASS_ENABLED, true),
+            readHuntHudSetting(SETTING_HUNT_HUD, HuntHudMode.ACTION_BAR)
+        );
+    }
+
+    public synchronized void setCountNakedKills(boolean enabled) throws SQLException {
+        setSetting(SETTING_COUNT_NAKED_KILLS, Boolean.toString(enabled));
+    }
+
+    public synchronized void setSpawnKillPeriodMillis(long millis) throws SQLException {
+        setSetting(SETTING_SPAWN_KILL_PERIOD_MILLIS, Long.toString(Math.max(0L, millis)));
+    }
+
+    public synchronized void setCountRepeatKills(boolean enabled) throws SQLException {
+        setSetting(SETTING_COUNT_REPEAT_KILLS, Boolean.toString(enabled));
+    }
+
+    public synchronized void setAllowSelfBounties(boolean enabled) throws SQLException {
+        setSetting(SETTING_ALLOW_SELF_BOUNTIES, Boolean.toString(enabled));
+    }
+
+    public synchronized void setTrackingItem(Material material) throws SQLException {
+        setSetting(SETTING_TRACKING_ITEM, material == null || material == Material.AIR ? "NONE" : material.name());
+    }
+
+    public synchronized void setTrackingPeriodMillis(long millis) throws SQLException {
+        setSetting(SETTING_TRACKING_PERIOD_MILLIS, Long.toString(Math.max(0L, millis)));
+    }
+
+    public synchronized void setTrackingGlowingDurationMillis(long millis) throws SQLException {
+        setSetting(SETTING_TRACKING_GLOWING_DURATION_MILLIS, Long.toString(Math.max(0L, millis)));
+    }
+
+    public synchronized void setTrackingCompassEnabled(boolean enabled) throws SQLException {
+        setSetting(SETTING_TRACKING_COMPASS_ENABLED, Boolean.toString(enabled));
+    }
+
+    public synchronized void setHuntHud(HuntHudMode mode) throws SQLException {
+        setSetting(SETTING_HUNT_HUD, mode == null ? HuntHudMode.ACTION_BAR.name() : mode.name());
     }
 
     public synchronized int getKillStreak(UUID uuid) throws SQLException {
@@ -441,11 +522,29 @@ public final class BountyDatabase implements AutoCloseable {
         String killerName,
         long now
     ) throws SQLException {
+        return applyAutomaticBountiesForKill(victimUuid, victimName, killerUuid, killerName, now, true);
+    }
+
+    public synchronized AutoBountyApplyResult applyAutomaticBountiesForKill(
+        UUID victimUuid,
+        String victimName,
+        UUID killerUuid,
+        String killerName,
+        long now,
+        boolean countRepeatKills
+    ) throws SQLException {
         return inTransaction(() -> {
             setKillStreakInTransaction(victimUuid, victimName, 0);
+            clearKillVictimsInTransaction(victimUuid);
+
+            boolean enabled = autoBountiesEnabledInTransaction();
+            if (!countRepeatKills && !recordKillVictimInTransaction(killerUuid, victimUuid)) {
+                return new AutoBountyApplyResult(getKillStreakInTransaction(killerUuid), 0, enabled);
+            }
+
             int newStreak = incrementKillStreakInTransaction(killerUuid, killerName);
 
-            if (!autoBountiesEnabledInTransaction()) {
+            if (!enabled) {
                 return new AutoBountyApplyResult(newStreak, 0, false);
             }
 
@@ -491,29 +590,164 @@ public final class BountyDatabase implements AutoCloseable {
                 statement.setLong(4, now);
                 statement.setString(5, targetUuid.toString());
                 statement.setString(6, RewardState.ACTIVE.name());
-                return statement.executeUpdate();
+                int moved = statement.executeUpdate();
+                if (moved > 0) {
+                    deleteTrackingInTransaction(targetUuid);
+                }
+                return moved;
             }
         });
     }
 
     public synchronized int clearActiveBounties() throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
-            DELETE FROM bounties
-            WHERE state = ?
-            """)) {
-            statement.setString(1, RewardState.ACTIVE.name());
-            return statement.executeUpdate();
-        }
+        return inTransaction(() -> {
+            try (PreparedStatement deleteTracking = connection.prepareStatement("""
+                DELETE FROM public_tracking
+                WHERE target_uuid IN (
+                    SELECT DISTINCT target_uuid FROM bounties WHERE state = ?
+                )
+                """);
+                 PreparedStatement statement = connection.prepareStatement("""
+                     DELETE FROM bounties
+                     WHERE state = ?
+                     """)) {
+                deleteTracking.setString(1, RewardState.ACTIVE.name());
+                deleteTracking.executeUpdate();
+                statement.setString(1, RewardState.ACTIVE.name());
+                return statement.executeUpdate();
+            }
+        });
     }
 
     public synchronized int clearActiveBounties(UUID targetUuid) throws SQLException {
+        return inTransaction(() -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                DELETE FROM bounties
+                WHERE target_uuid = ?
+                  AND state = ?
+                """)) {
+                statement.setString(1, targetUuid.toString());
+                statement.setString(2, RewardState.ACTIVE.name());
+                int cleared = statement.executeUpdate();
+                if (cleared > 0) {
+                    deleteTrackingInTransaction(targetUuid);
+                }
+                return cleared;
+            }
+        });
+    }
+
+    public synchronized List<BountyReward> listActiveRewards() throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("""
-            DELETE FROM bounties
+            SELECT *
+            FROM bounties
+            WHERE state = ?
+            ORDER BY id ASC
+            """)) {
+            statement.setString(1, RewardState.ACTIVE.name());
+            return readRewards(statement);
+        }
+    }
+
+    public synchronized List<BountyReward> listActiveRewards(UUID targetUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT *
+            FROM bounties
             WHERE target_uuid = ?
               AND state = ?
+            ORDER BY id ASC
             """)) {
             statement.setString(1, targetUuid.toString());
             statement.setString(2, RewardState.ACTIVE.name());
+            return readRewards(statement);
+        }
+    }
+
+    public synchronized boolean hasActiveBounty(UUID targetUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT 1
+            FROM bounties
+            WHERE target_uuid = ?
+              AND state = ?
+            LIMIT 1
+            """)) {
+            statement.setString(1, targetUuid.toString());
+            statement.setString(2, RewardState.ACTIVE.name());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
+        }
+    }
+
+    public synchronized boolean enableTracking(UUID targetUuid, String targetName, UUID enabledByUuid, String enabledByName, long now) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            INSERT OR IGNORE INTO public_tracking(target_uuid, target_name, enabled_by_uuid, enabled_by_name, enabled_at)
+            VALUES (?, ?, ?, ?, ?)
+            """)) {
+            statement.setString(1, targetUuid.toString());
+            statement.setString(2, targetName);
+            statement.setString(3, enabledByUuid.toString());
+            statement.setString(4, enabledByName);
+            statement.setLong(5, now);
+            return statement.executeUpdate() == 1;
+        }
+    }
+
+    public synchronized Optional<TrackingState> getTrackingState(UUID targetUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT *
+            FROM public_tracking
+            WHERE target_uuid = ?
+            """)) {
+            statement.setString(1, targetUuid.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(readTrackingState(resultSet));
+            }
+        }
+    }
+
+    public synchronized List<TrackingState> listTrackingStates() throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT *
+            FROM public_tracking
+            ORDER BY target_name COLLATE NOCASE ASC
+            """);
+             ResultSet resultSet = statement.executeQuery()) {
+            List<TrackingState> states = new ArrayList<>();
+            while (resultSet.next()) {
+                states.add(readTrackingState(resultSet));
+            }
+            return states;
+        }
+    }
+
+    public synchronized void updateTrackingLocation(UUID targetUuid, String worldName, int x, int y, int z, long now) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            UPDATE public_tracking
+            SET last_world = ?, last_x = ?, last_y = ?, last_z = ?, last_revealed_at = ?
+            WHERE target_uuid = ?
+            """)) {
+            statement.setString(1, worldName);
+            statement.setInt(2, x);
+            statement.setInt(3, y);
+            statement.setInt(4, z);
+            statement.setLong(5, now);
+            statement.setString(6, targetUuid.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public synchronized boolean disableTracking(UUID targetUuid) throws SQLException {
+        return deleteTrackingInTransaction(targetUuid) > 0;
+    }
+
+    public synchronized int disableAllTracking() throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            DELETE FROM public_tracking
+            """)) {
             return statement.executeUpdate();
         }
     }
@@ -711,15 +945,65 @@ public final class BountyDatabase implements AutoCloseable {
     private void seedAutoBountyDefaults() throws SQLException {
         long now = System.currentTimeMillis();
         boolean createdOnKill;
-        try (PreparedStatement enabled = connection.prepareStatement("""
+        try (PreparedStatement legacyEnabled = connection.prepareStatement("""
             INSERT OR IGNORE INTO auto_bounty_settings(key, value)
             VALUES ('enabled', 'true')
+            """);
+             PreparedStatement enabled = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement countNakedKills = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement spawnKillPeriod = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement countRepeatKills = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement allowSelfBounties = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement trackingItem = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement trackingPeriod = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement trackingGlowingDuration = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement trackingCompass = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+                 """);
+             PreparedStatement huntHud = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
             """);
              PreparedStatement onKill = connection.prepareStatement("""
                  INSERT OR IGNORE INTO auto_bounty_folders(threshold, name, protected, created_at)
                  VALUES (?, 'On kill', 1, ?)
                  """)) {
-            enabled.executeUpdate();
+            legacyEnabled.executeUpdate();
+            seedSetting(enabled, SETTING_AUTO_BOUNTIES_ENABLED, readRawSetting(LEGACY_SETTING_AUTO_BOUNTIES_ENABLED).orElse("true"));
+            seedSetting(countNakedKills, SETTING_COUNT_NAKED_KILLS, "true");
+            seedSetting(spawnKillPeriod, SETTING_SPAWN_KILL_PERIOD_MILLIS, "0");
+            seedSetting(countRepeatKills, SETTING_COUNT_REPEAT_KILLS, "true");
+            seedSetting(allowSelfBounties, SETTING_ALLOW_SELF_BOUNTIES, "false");
+            seedSetting(trackingItem, SETTING_TRACKING_ITEM, Material.RECOVERY_COMPASS.name());
+            seedSetting(trackingPeriod, SETTING_TRACKING_PERIOD_MILLIS, "300000");
+            seedSetting(trackingGlowingDuration, SETTING_TRACKING_GLOWING_DURATION_MILLIS, "5000");
+            seedSetting(trackingCompass, SETTING_TRACKING_COMPASS_ENABLED, "true");
+            seedSetting(huntHud, SETTING_HUNT_HUD, HuntHudMode.ACTION_BAR.name());
             onKill.setInt(1, ON_KILL_THRESHOLD);
             onKill.setLong(2, now);
             createdOnKill = onKill.executeUpdate() == 1;
@@ -747,6 +1031,85 @@ public final class BountyDatabase implements AutoCloseable {
         }
     }
 
+    private void seedSetting(PreparedStatement statement, String key, String value) throws SQLException {
+        statement.setString(1, key);
+        statement.setString(2, value);
+        statement.executeUpdate();
+    }
+
+    private Optional<String> readRawSetting(String key) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT value
+            FROM auto_bounty_settings
+            WHERE key = ?
+            """)) {
+            statement.setString(1, key);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? Optional.of(resultSet.getString("value")) : Optional.empty();
+            }
+        }
+    }
+
+    private void setSetting(String key, String value) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            INSERT INTO auto_bounty_settings(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """)) {
+            statement.setString(1, key);
+            statement.setString(2, value);
+            statement.executeUpdate();
+        }
+    }
+
+    private boolean readBooleanSetting(String key, boolean defaultValue) throws SQLException {
+        Optional<String> raw = readRawSetting(key);
+        if (raw.isEmpty() && SETTING_AUTO_BOUNTIES_ENABLED.equals(key)) {
+            raw = readRawSetting(LEGACY_SETTING_AUTO_BOUNTIES_ENABLED);
+        }
+        return raw.map(Boolean::parseBoolean).orElse(defaultValue);
+    }
+
+    private long readLongSetting(String key, long defaultValue) throws SQLException {
+        Optional<String> raw = readRawSetting(key);
+        if (raw.isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            return Math.max(0L, Long.parseLong(raw.get()));
+        } catch (NumberFormatException exception) {
+            return defaultValue;
+        }
+    }
+
+    private Material readMaterialSetting(String key, Material defaultValue) throws SQLException {
+        Optional<String> raw = readRawSetting(key);
+        if (raw.isEmpty()) {
+            return defaultValue;
+        }
+        if (raw.get().equalsIgnoreCase("NONE")) {
+            return Material.AIR;
+        }
+        try {
+            Material material = Material.valueOf(raw.get());
+            return material.isItem() ? material : defaultValue;
+        } catch (IllegalArgumentException exception) {
+            return defaultValue;
+        }
+    }
+
+    private HuntHudMode readHuntHudSetting(String key, HuntHudMode defaultValue) throws SQLException {
+        Optional<String> raw = readRawSetting(key);
+        if (raw.isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            return HuntHudMode.valueOf(raw.get());
+        } catch (IllegalArgumentException exception) {
+            return defaultValue;
+        }
+    }
+
     private KnownPlayer readKnownPlayer(ResultSet resultSet) throws SQLException {
         return new KnownPlayer(
             UUID.fromString(resultSet.getString("uuid")),
@@ -765,15 +1128,23 @@ public final class BountyDatabase implements AutoCloseable {
         );
     }
 
+    private TrackingState readTrackingState(ResultSet resultSet) throws SQLException {
+        return new TrackingState(
+            UUID.fromString(resultSet.getString("target_uuid")),
+            resultSet.getString("target_name"),
+            UUID.fromString(resultSet.getString("enabled_by_uuid")),
+            resultSet.getString("enabled_by_name"),
+            resultSet.getLong("enabled_at"),
+            resultSet.getString("last_world"),
+            resultSet.getInt("last_x"),
+            resultSet.getInt("last_y"),
+            resultSet.getInt("last_z"),
+            resultSet.getLong("last_revealed_at")
+        );
+    }
+
     private boolean autoBountiesEnabledInTransaction() throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement("""
-            SELECT value
-            FROM auto_bounty_settings
-            WHERE key = 'enabled'
-            """);
-             ResultSet resultSet = statement.executeQuery()) {
-            return !resultSet.next() || Boolean.parseBoolean(resultSet.getString("value"));
-        }
+        return readBooleanSetting(SETTING_AUTO_BOUNTIES_ENABLED, true);
     }
 
     private void setKillStreakInTransaction(UUID uuid, String name, int kills) throws SQLException {
@@ -787,6 +1158,40 @@ public final class BountyDatabase implements AutoCloseable {
             statement.setString(1, uuid.toString());
             statement.setString(2, name);
             statement.setInt(3, kills);
+            statement.executeUpdate();
+        }
+    }
+
+    private int getKillStreakInTransaction(UUID uuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT kills
+            FROM kill_streaks
+            WHERE uuid = ?
+            """)) {
+            statement.setString(1, uuid.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getInt("kills") : 0;
+            }
+        }
+    }
+
+    private boolean recordKillVictimInTransaction(UUID killerUuid, UUID victimUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            INSERT OR IGNORE INTO kill_streak_victims(killer_uuid, victim_uuid)
+            VALUES (?, ?)
+            """)) {
+            statement.setString(1, killerUuid.toString());
+            statement.setString(2, victimUuid.toString());
+            return statement.executeUpdate() == 1;
+        }
+    }
+
+    private void clearKillVictimsInTransaction(UUID killerUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            DELETE FROM kill_streak_victims
+            WHERE killer_uuid = ?
+            """)) {
+            statement.setString(1, killerUuid.toString());
             statement.executeUpdate();
         }
     }
@@ -816,6 +1221,16 @@ public final class BountyDatabase implements AutoCloseable {
                 }
                 return resultSet.getInt("kills");
             }
+        }
+    }
+
+    private int deleteTrackingInTransaction(UUID targetUuid) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            DELETE FROM public_tracking
+            WHERE target_uuid = ?
+            """)) {
+            statement.setString(1, targetUuid.toString());
+            return statement.executeUpdate();
         }
     }
 
