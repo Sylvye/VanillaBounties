@@ -168,7 +168,7 @@ class BountyDatabaseTest extends BukkitTestSupport {
             assertEquals(0L, defaults.spawnKillPeriodMillis());
             assertTrue(defaults.countRepeatKills());
             assertFalse(defaults.allowSelfBounties());
-            assertEquals(Material.RECOVERY_COMPASS, defaults.trackingItem());
+            assertEquals(Material.RECOVERY_COMPASS, defaults.trackingItem().getType());
             assertEquals(300_000L, defaults.trackingPeriodMillis());
             assertEquals(5_000L, defaults.trackingGlowingDurationMillis());
             assertTrue(defaults.trackingCompassEnabled());
@@ -189,7 +189,7 @@ class BountyDatabaseTest extends BukkitTestSupport {
             assertEquals(12_000L, updated.spawnKillPeriodMillis());
             assertFalse(updated.countRepeatKills());
             assertTrue(updated.allowSelfBounties());
-            assertEquals(Material.ENDER_EYE, updated.trackingItem());
+            assertEquals(Material.ENDER_EYE, updated.trackingItem().getType());
             assertEquals(60_000L, updated.trackingPeriodMillis());
             assertEquals(2_000L, updated.trackingGlowingDurationMillis());
             assertFalse(updated.trackingCompassEnabled());

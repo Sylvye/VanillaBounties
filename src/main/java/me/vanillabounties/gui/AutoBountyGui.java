@@ -66,11 +66,11 @@ public final class AutoBountyGui {
         }
 
         if (clampedPage > 0) {
-            inventory.setItem(PREVIOUS_SLOT, namedItem(Material.ARROW, Component.text("Previous Page", NamedTextColor.YELLOW), List.of()));
+            inventory.setItem(PREVIOUS_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Previous Page", NamedTextColor.YELLOW), List.of()));
         }
         inventory.setItem(TOGGLE_SLOT, createToggleItem(enabled));
         if (clampedPage < maxPage) {
-            inventory.setItem(NEXT_SLOT, namedItem(Material.ARROW, Component.text("Next Page", NamedTextColor.YELLOW), List.of()));
+            inventory.setItem(NEXT_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Next Page", NamedTextColor.YELLOW), List.of()));
         }
 
         admin.openInventory(inventory);
@@ -111,15 +111,15 @@ public final class AutoBountyGui {
             }
         }
 
-        inventory.setItem(BACK_SLOT, namedItem(Material.ARROW, Component.text("Back", NamedTextColor.YELLOW), List.of()));
-        inventory.setItem(TOGGLE_SLOT, namedItem(Material.HOPPER, Component.text("Add templates", NamedTextColor.AQUA),
+        inventory.setItem(BACK_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Back", NamedTextColor.YELLOW), List.of()));
+        inventory.setItem(TOGGLE_SLOT, GuiItems.namedItem(Material.HOPPER, Component.text("Add templates", NamedTextColor.AQUA),
             List.of(
                 Component.text("Click an item in your inventory", NamedTextColor.GRAY),
                 Component.text("or click here with an item cursor.", NamedTextColor.GRAY),
                 Component.text("Right-click a template to remove it.", NamedTextColor.GRAY)
             )));
         if (!folder.protectedFolder()) {
-            inventory.setItem(DELETE_SLOT, namedItem(Material.BARRIER, Component.text("Delete Folder", NamedTextColor.RED),
+            inventory.setItem(DELETE_SLOT, GuiItems.namedItem(Material.BARRIER, Component.text("Delete Folder", NamedTextColor.RED),
                 List.of(Component.text("Deletes this threshold and its templates.", NamedTextColor.GRAY))));
         }
 
@@ -237,7 +237,7 @@ public final class AutoBountyGui {
             lore.add(Component.text("Runs at exactly " + folder.threshold() + " kills.", NamedTextColor.GRAY));
         }
         lore.add(Component.text("Click to edit.", NamedTextColor.DARK_GRAY));
-        return namedItem(material, name, lore);
+        return GuiItems.namedItem(material, name, lore);
     }
 
     private ItemStack createTemplateItem(AutoBountyTemplate template) {
@@ -245,10 +245,10 @@ public final class AutoBountyGui {
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
             List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
-            lore.add(Component.empty());
+            lore.add(GuiItems.emptyLine());
             lore.add(Component.text("Automatic bounty template", NamedTextColor.AQUA));
             lore.add(Component.text("Right-click to remove.", NamedTextColor.DARK_GRAY));
-            meta.lore(lore);
+            GuiItems.lore(meta, lore);
             meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
             item.setItemMeta(meta);
         }
@@ -258,16 +258,7 @@ public final class AutoBountyGui {
     private ItemStack createToggleItem(boolean enabled) {
         Material material = enabled ? Material.LIME_DYE : Material.GRAY_DYE;
         NamedTextColor color = enabled ? NamedTextColor.GREEN : NamedTextColor.RED;
-        return namedItem(material, Component.text("Automatic Bounties: " + (enabled ? "Enabled" : "Disabled"), color),
+        return GuiItems.namedItem(material, Component.text("Automatic Bounties: " + (enabled ? "Enabled" : "Disabled"), color),
             List.of(Component.text("Click to toggle all automatic bounty placement.", NamedTextColor.GRAY)));
-    }
-
-    private ItemStack namedItem(Material material, Component name, List<Component> lore) {
-        ItemStack item = new ItemStack(material);
-        ItemMeta meta = item.getItemMeta();
-        meta.displayName(name);
-        meta.lore(lore);
-        item.setItemMeta(meta);
-        return item;
     }
 }

@@ -22,6 +22,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,6 +39,7 @@ public final class BountyDatabase implements AutoCloseable {
     private static final String SETTING_COUNT_REPEAT_KILLS = "count_repeat_kills";
     private static final String SETTING_ALLOW_SELF_BOUNTIES = "allow_self_bounties";
     private static final String SETTING_TRACKING_ITEM = "tracking_item";
+    private static final String TRACKING_ITEM_SERIALIZED_PREFIX = "item:";
     private static final String SETTING_TRACKING_PERIOD_MILLIS = "tracking_period_millis";
     private static final String SETTING_TRACKING_GLOWING_DURATION_MILLIS = "tracking_glowing_duration_millis";
     private static final String SETTING_TRACKING_COMPASS_ENABLED = "tracking_compass_enabled";
@@ -300,7 +302,7 @@ public final class BountyDatabase implements AutoCloseable {
             readLongSetting(SETTING_SPAWN_KILL_PERIOD_MILLIS, 0L),
             readBooleanSetting(SETTING_COUNT_REPEAT_KILLS, true),
             readBooleanSetting(SETTING_ALLOW_SELF_BOUNTIES, false),
-            readMaterialSetting(SETTING_TRACKING_ITEM, Material.RECOVERY_COMPASS),
+            readTrackingItemSetting(SETTING_TRACKING_ITEM, Material.RECOVERY_COMPASS),
             readLongSetting(SETTING_TRACKING_PERIOD_MILLIS, 300_000L),
             readLongSetting(SETTING_TRACKING_GLOWING_DURATION_MILLIS, 5_000L),
             readBooleanSetting(SETTING_TRACKING_COMPASS_ENABLED, true),
@@ -325,7 +327,15 @@ public final class BountyDatabase implements AutoCloseable {
     }
 
     public synchronized void setTrackingItem(Material material) throws SQLException {
-        setSetting(SETTING_TRACKING_ITEM, material == null || material == Material.AIR ? "NONE" : material.name());
+        setTrackingItem(material == null || material == Material.AIR ? null : new ItemStack(material, 1));
+    }
+
+    public synchronized void setTrackingItem(ItemStack item) throws SQLException {
+        if (item == null || item.getType() == Material.AIR) {
+            setSetting(SETTING_TRACKING_ITEM, "NONE");
+            return;
+        }
+        setSetting(SETTING_TRACKING_ITEM, TRACKING_ITEM_SERIALIZED_PREFIX + Base64.getEncoder().encodeToString(encode(oneItem(item))));
     }
 
     public synchronized void setTrackingPeriodMillis(long millis) throws SQLException {
@@ -1082,20 +1092,35 @@ public final class BountyDatabase implements AutoCloseable {
         }
     }
 
-    private Material readMaterialSetting(String key, Material defaultValue) throws SQLException {
+    private ItemStack readTrackingItemSetting(String key, Material defaultValue) throws SQLException {
         Optional<String> raw = readRawSetting(key);
         if (raw.isEmpty()) {
-            return defaultValue;
+            return new ItemStack(defaultValue, 1);
         }
         if (raw.get().equalsIgnoreCase("NONE")) {
-            return Material.AIR;
+            return new ItemStack(Material.AIR);
+        }
+        if (raw.get().startsWith(TRACKING_ITEM_SERIALIZED_PREFIX)) {
+            try {
+                byte[] bytes = Base64.getDecoder().decode(raw.get().substring(TRACKING_ITEM_SERIALIZED_PREFIX.length()));
+                ItemStack item = decode(bytes);
+                return item == null || item.getType() == Material.AIR ? new ItemStack(defaultValue, 1) : oneItem(item);
+            } catch (IllegalArgumentException | SQLException exception) {
+                return new ItemStack(defaultValue, 1);
+            }
         }
         try {
             Material material = Material.valueOf(raw.get());
-            return material.isItem() ? material : defaultValue;
+            return material.isItem() ? new ItemStack(material, 1) : new ItemStack(defaultValue, 1);
         } catch (IllegalArgumentException exception) {
-            return defaultValue;
+            return new ItemStack(defaultValue, 1);
         }
+    }
+
+    private ItemStack oneItem(ItemStack item) {
+        ItemStack copy = item.clone();
+        copy.setAmount(1);
+        return copy;
     }
 
     private HuntHudMode readHuntHudSetting(String key, HuntHudMode defaultValue) throws SQLException {

@@ -6,9 +6,11 @@ import me.vanillabounties.model.HuntHudMode;
 import me.vanillabounties.model.KnownPlayer;
 import me.vanillabounties.model.RewardState;
 import me.vanillabounties.storage.BountyDatabase;
+import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockbukkit.mockbukkit.MockBukkit;
@@ -288,6 +290,28 @@ class BountyServiceTest extends BukkitTestSupport {
     }
 
     @Test
+    void trackingRequiresConfiguredItemMeta() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            ItemStack trackingItem = namedItem(Material.RECOVERY_COMPASS, "Tracker Token");
+            database.setTrackingItem(trackingItem);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+            tracker.getInventory().addItem(trackingItem.clone());
+
+            BountyService.TrackingResult result = service.enablePublicTracking(tracker, target.getUniqueId(), target.getName());
+
+            assertTrue(result.success());
+            assertEquals(1, tracker.getInventory().all(Material.RECOVERY_COMPASS).values().stream().mapToInt(ItemStack::getAmount).sum());
+            assertTrue(hasSimilarItem(tracker, new ItemStack(Material.RECOVERY_COMPASS, 1)));
+        }
+    }
+
+    @Test
     void disablingTrackingItemClearsLiveTrackingWithoutClearingBounty() throws Exception {
         try (BountyDatabase database = openDatabase()) {
             PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
@@ -298,11 +322,12 @@ class BountyServiceTest extends BukkitTestSupport {
             database.setHuntHud(HuntHudMode.BOSSBAR);
             database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
             hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+            hunter.getInventory().addItem(new ItemStack(Material.COMPASS, 1));
 
             assertTrue(service.enablePublicTracking(hunter, target.getUniqueId(), target.getName()).success());
             assertTrue(service.toggleHunt(hunter, target.getUniqueId(), target.getName()).success());
             assertTrue(service.isHunting(hunter, target.getUniqueId()));
-            assertEquals(1, hunter.getInventory().all(Material.COMPASS).values().stream().mapToInt(ItemStack::getAmount).sum());
+            assertEquals(2, countMaterial(hunter, Material.COMPASS));
             assertEquals(1, hunter.getBossBars().size());
 
             service.setTrackingItem(Material.AIR);
@@ -310,7 +335,7 @@ class BountyServiceTest extends BukkitTestSupport {
             assertTrue(database.getTrackingState(target.getUniqueId()).isEmpty());
             assertTrue(database.hasActiveBounty(target.getUniqueId()));
             assertFalse(service.isHunting(hunter, target.getUniqueId()));
-            assertEquals(0, hunter.getInventory().all(Material.COMPASS).values().stream().mapToInt(ItemStack::getAmount).sum());
+            assertEquals(1, countMaterial(hunter, Material.COMPASS));
             assertTrue(hunter.getBossBars().isEmpty());
         }
     }
@@ -326,11 +351,12 @@ class BountyServiceTest extends BukkitTestSupport {
             database.setHuntHud(HuntHudMode.BOSSBAR);
             database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.EMERALD, 1), 10L);
             hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+            hunter.getInventory().addItem(new ItemStack(Material.COMPASS, 1));
 
             assertTrue(service.enablePublicTracking(hunter, target.getUniqueId(), target.getName()).success());
             assertTrue(service.toggleHunt(hunter, target.getUniqueId(), target.getName()).success());
             assertTrue(service.isHunting(hunter, target.getUniqueId()));
-            assertEquals(1, hunter.getInventory().all(Material.COMPASS).values().stream().mapToInt(ItemStack::getAmount).sum());
+            assertEquals(2, countMaterial(hunter, Material.COMPASS));
             assertEquals(1, hunter.getBossBars().size());
 
             service.setTrackingCompassEnabled(false);
@@ -339,8 +365,31 @@ class BountyServiceTest extends BukkitTestSupport {
             assertTrue(database.getTrackingState(target.getUniqueId()).isEmpty());
             assertTrue(database.hasActiveBounty(target.getUniqueId()));
             assertFalse(service.isHunting(hunter, target.getUniqueId()));
-            assertEquals(0, hunter.getInventory().all(Material.COMPASS).values().stream().mapToInt(ItemStack::getAmount).sum());
+            assertEquals(1, countMaterial(hunter, Material.COMPASS));
             assertTrue(hunter.getBossBars().isEmpty());
+        }
+    }
+
+    @Test
+    void huntStartFailsWithoutDroppingCompassWhenInventoryIsFull() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock hunter = MockBukkit.getMock().addPlayer("Hunter");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(hunter, target.getUniqueId(), target.getName()).success());
+            fillEmptySlots(hunter);
+
+            BountyService.HuntResult result = service.toggleHunt(hunter, target.getUniqueId(), target.getName());
+
+            assertFalse(result.success());
+            assertFalse(service.isHunting(hunter));
+            assertFalse(service.hasHuntCompass(hunter));
+            assertEquals(0, countMaterial(hunter, Material.COMPASS));
         }
     }
 
@@ -403,5 +452,36 @@ class BountyServiceTest extends BukkitTestSupport {
         BountyDatabase database = new BountyDatabase(tempDir.resolve(UUID.randomUUID() + ".db"));
         database.migrate();
         return database;
+    }
+
+    private int countMaterial(PlayerMock player, Material material) {
+        return player.getInventory().all(material).values().stream().mapToInt(ItemStack::getAmount).sum();
+    }
+
+    private ItemStack namedItem(Material material, String name) {
+        ItemStack item = new ItemStack(material, 1);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text(name));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private boolean hasSimilarItem(PlayerMock player, ItemStack expected) {
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (item != null && item.isSimilar(expected)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void fillEmptySlots(PlayerMock player) {
+        ItemStack[] contents = player.getInventory().getStorageContents();
+        for (int i = 0; i < contents.length; i++) {
+            if (contents[i] == null || contents[i].getType() == Material.AIR) {
+                contents[i] = new ItemStack(Material.DIRT, 64);
+            }
+        }
+        player.getInventory().setStorageContents(contents);
     }
 }

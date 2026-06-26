@@ -11,7 +11,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
 
 import java.sql.SQLException;
@@ -71,7 +70,7 @@ public final class BountySettingsGui {
         inventory.setItem(TRACKING_PERIOD_SLOT, durationItem("Tracking Period", settings.trackingPeriodMillis()));
         inventory.setItem(TRACKING_GLOWING_SLOT, durationItem("Tracking Glowing Duration", settings.trackingGlowingDurationMillis()));
         inventory.setItem(TRACKING_COMPASS_SLOT, toggleItem("Tracking Compass", settings.trackingCompassEnabled()));
-        inventory.setItem(HUNT_HUD_SLOT, namedItem(Material.COMPASS, Component.text("Hunt HUD: " + settings.huntHud().name(), NamedTextColor.AQUA),
+        inventory.setItem(HUNT_HUD_SLOT, GuiItems.namedItem(Material.COMPASS, Component.text("Hunt HUD: " + settings.huntHud().name(), NamedTextColor.AQUA),
             List.of(Component.text("Click to cycle action bar, chat, bossbar.", NamedTextColor.GRAY))));
 
         admin.openInventory(inventory);
@@ -156,7 +155,7 @@ public final class BountySettingsGui {
             admin.sendMessage(Component.text("Click with an item cursor, or right-click to disable tracking.", NamedTextColor.RED));
             return;
         }
-        bountyService.setTrackingItem(cursor.getType());
+        bountyService.setTrackingItem(cursor);
     }
 
     private void promptDuration(Player admin, PendingDuration pending) {
@@ -205,22 +204,22 @@ public final class BountySettingsGui {
     }
 
     private ItemStack toggleItem(String label, boolean enabled) {
-        return namedItem(enabled ? Material.LIME_DYE : Material.GRAY_DYE,
+        return GuiItems.namedItem(enabled ? Material.LIME_DYE : Material.GRAY_DYE,
             Component.text(label + ": " + (enabled ? "Enabled" : "Disabled"), enabled ? NamedTextColor.GREEN : NamedTextColor.RED),
             List.of(Component.text("Click to toggle.", NamedTextColor.GRAY)));
     }
 
     private ItemStack durationItem(String label, long millis) {
-        return namedItem(Material.CLOCK, Component.text(label + ": " + formatDuration(millis), NamedTextColor.YELLOW),
+        return GuiItems.namedItem(Material.CLOCK, Component.text(label + ": " + formatDuration(millis), NamedTextColor.YELLOW),
             List.of(Component.text("Click to edit in chat.", NamedTextColor.GRAY)));
     }
 
     private ItemStack trackingItem(PluginSettings settings) {
         if (!settings.trackingEnabled()) {
-            return namedItem(Material.BARRIER, Component.text("Tracking Item: None", NamedTextColor.RED),
+            return GuiItems.namedItem(Material.BARRIER, Component.text("Tracking Item: None", NamedTextColor.RED),
                 List.of(Component.text("Click with an item to set.", NamedTextColor.GRAY)));
         }
-        return namedItem(settings.trackingItem(), Component.text("Tracking Item: " + settings.trackingItem().name(), NamedTextColor.AQUA),
+        return GuiItems.namedItem(settings.trackingItem(), Component.text("Tracking Item: " + settings.trackingItem().getType().name(), NamedTextColor.AQUA),
             List.of(
                 Component.text("Click with an item to set.", NamedTextColor.GRAY),
                 Component.text("Right-click to disable tracking.", NamedTextColor.GRAY)
@@ -238,15 +237,6 @@ public final class BountySettingsGui {
             return (millis / 1_000L) + "s";
         }
         return millis + "ms";
-    }
-
-    private ItemStack namedItem(Material material, Component name, List<Component> lore) {
-        ItemStack item = new ItemStack(material);
-        ItemMeta meta = item.getItemMeta();
-        meta.displayName(name);
-        meta.lore(lore);
-        item.setItemMeta(meta);
-        return item;
     }
 
     private enum PendingDuration {

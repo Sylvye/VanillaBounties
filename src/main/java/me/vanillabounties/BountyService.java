@@ -22,6 +22,7 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.inventory.meta.CompassMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -368,7 +369,12 @@ public final class BountyService {
     }
 
     public void setTrackingItem(Material material) throws SQLException {
-        database.setTrackingItem(material);
+        setTrackingItem(material == null || material == Material.AIR ? null : new ItemStack(material, 1));
+    }
+
+    public void setTrackingItem(ItemStack item) throws SQLException {
+        database.setTrackingItem(item);
+        Material material = item == null ? Material.AIR : item.getType();
         if (material == null || material == Material.AIR) {
             shutdownTracking(Component.text("Bounty tracking was disabled by an admin.", NamedTextColor.YELLOW));
         }
@@ -401,6 +407,10 @@ public final class BountyService {
         return targetUuid.equals(huntedTargets.get(hunter.getUniqueId()));
     }
 
+    public boolean isHunting(Player hunter) {
+        return huntedTargets.containsKey(hunter.getUniqueId());
+    }
+
     public TrackingResult enablePublicTracking(Player viewer, UUID targetUuid, String targetName) {
         PluginSettings settings;
         try {
@@ -419,18 +429,19 @@ public final class BountyService {
             return TrackingResult.failure(Component.text("Could not start tracking.", NamedTextColor.RED));
         }
 
-        if (!consumeOne(viewer, settings.trackingItem())) {
-            return TrackingResult.failure(Component.text("You need 1x " + settings.trackingItem().name() + " to track that bounty.", NamedTextColor.RED));
+        ItemStack trackingItem = settings.trackingItem();
+        if (!consumeOne(viewer, trackingItem)) {
+            return TrackingResult.failure(Component.text("You need 1x " + trackingItem.getType().name() + " to track that bounty.", NamedTextColor.RED));
         }
 
         try {
             boolean enabled = database.enableTracking(targetUuid, targetName, viewer.getUniqueId(), viewer.getName(), System.currentTimeMillis());
             if (!enabled) {
-                giveOrDrop(viewer, new ItemStack(settings.trackingItem(), 1));
+                giveOrDrop(viewer, oneItem(trackingItem));
                 return TrackingResult.failure(Component.text("That bounty is already being tracked.", NamedTextColor.RED));
             }
         } catch (SQLException exception) {
-            giveOrDrop(viewer, new ItemStack(settings.trackingItem(), 1));
+            giveOrDrop(viewer, oneItem(trackingItem));
             plugin.getLogger().log(Level.SEVERE, "Failed to enable tracking", exception);
             return TrackingResult.failure(Component.text("Could not start tracking.", NamedTextColor.RED));
         }
@@ -470,8 +481,9 @@ public final class BountyService {
 
         stopHunt(hunter, null);
         huntedTargets.put(hunter.getUniqueId(), targetUuid);
-        if (trackingState.hasLocation()) {
-            updateHuntCompass(hunter, trackingState);
+        if (!updateHuntCompass(hunter, trackingState)) {
+            stopHunt(hunter, Component.text("Make inventory space before starting a hunt.", NamedTextColor.YELLOW));
+            return HuntResult.failure(Component.text("Make inventory space before starting a hunt.", NamedTextColor.RED));
         }
         sendHuntHud(hunter, settings, Component.text("Hunting " + targetName + ".", NamedTextColor.GOLD));
         return HuntResult.success(Component.text("Hunting " + targetName + ".", NamedTextColor.GREEN));
@@ -601,6 +613,10 @@ public final class BountyService {
         stopHunt(hunter, null);
     }
 
+    public void stopHuntForDroppedCompass(Player hunter) {
+        stopHunt(hunter, Component.text("Hunt stopped because the compass was dropped.", NamedTextColor.YELLOW));
+    }
+
     private void shutdownTracking(Component message) throws SQLException {
         database.disableAllTracking();
         clearAllHunts(message);
@@ -683,36 +699,40 @@ public final class BountyService {
                 huntedTargets.remove(entry.getKey());
                 continue;
             }
-            updateHuntCompass(hunter, state);
+            if (!updateHuntCompass(hunter, state)) {
+                stopHunt(hunter, Component.text("Hunt stopped because your inventory could not hold the compass.", NamedTextColor.YELLOW));
+                continue;
+            }
             sendHuntHud(hunter, settings, message);
         }
     }
 
-    private void updateHuntCompass(Player hunter, TrackingState state) {
+    private boolean updateHuntCompass(Player hunter, TrackingState state) {
         if (!state.hasLocation()) {
-            return;
+            return true;
         }
 
         World world = Bukkit.getWorld(state.worldName());
         if (world == null) {
-            return;
+            return true;
         }
 
         removeHuntCompasses(hunter);
         ItemStack compass = new ItemStack(Material.COMPASS);
         ItemMeta meta = compass.getItemMeta();
-        if (meta instanceof CompassMeta compassMeta) {
-            compassMeta.displayName(Component.text("Hunt: " + state.targetName(), NamedTextColor.GOLD));
-            compassMeta.lore(List.of(
-                Component.text("Tracks last revealed location.", NamedTextColor.GRAY),
-                Component.text(formatLocation(state), NamedTextColor.YELLOW)
-            ));
-            compassMeta.setLodestone(new Location(world, state.x(), state.y(), state.z()));
-            compassMeta.setLodestoneTracked(false);
-            compassMeta.getPersistentDataContainer().set(huntCompassKey, PersistentDataType.STRING, state.targetUuid().toString());
-            compass.setItemMeta(compassMeta);
-            giveOrDrop(hunter, compass);
+        if (!(meta instanceof CompassMeta compassMeta)) {
+            return false;
         }
+        compassMeta.displayName(Component.text("Hunt: " + state.targetName(), NamedTextColor.GOLD));
+        compassMeta.lore(List.of(
+            Component.text("Tracks last revealed location.", NamedTextColor.GRAY),
+            Component.text(formatLocation(state), NamedTextColor.YELLOW)
+        ));
+        compassMeta.setLodestone(new Location(world, state.x(), state.y(), state.z()));
+        compassMeta.setLodestoneTracked(false);
+        compassMeta.getPersistentDataContainer().set(huntCompassKey, PersistentDataType.STRING, state.targetUuid().toString());
+        compass.setItemMeta(compassMeta);
+        return giveHuntCompass(hunter, compass);
     }
 
     private void sendHuntHud(Player hunter, PluginSettings settings, Component message) {
@@ -767,42 +787,80 @@ public final class BountyService {
         }
     }
 
-    private boolean hasHuntCompass(Player hunter) {
+    public boolean hasHuntCompass(Player hunter) {
         for (ItemStack item : hunter.getInventory().getContents()) {
-            if (item != null && item.getType() == Material.COMPASS && isHuntCompass(item)) {
+            if (containsHuntCompass(item)) {
                 return true;
             }
         }
         return false;
     }
 
-    private void removeHuntCompasses(Player hunter) {
+    public void removeHuntCompasses(Player hunter) {
         PlayerInventory inventory = hunter.getInventory();
         ItemStack[] contents = inventory.getContents();
         for (int i = 0; i < contents.length; i++) {
             ItemStack item = contents[i];
-            if (item == null || item.getType() != Material.COMPASS || !isHuntCompass(item)) {
+            if (!containsHuntCompass(item)) {
                 continue;
             }
             inventory.setItem(i, null);
         }
     }
 
-    private boolean isHuntCompass(ItemStack item) {
+    public boolean isHuntCompass(ItemStack item) {
+        if (item == null || item.getType() != Material.COMPASS) {
+            return false;
+        }
         ItemMeta meta = item.getItemMeta();
         return meta != null && meta.getPersistentDataContainer().has(huntCompassKey, PersistentDataType.STRING);
     }
 
-    private boolean consumeOne(Player player, Material material) {
-        if (material == null || material == Material.AIR) {
+    public boolean containsHuntCompass(ItemStack item) {
+        if (isHuntCompass(item)) {
+            return true;
+        }
+        if (item == null) {
+            return false;
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (!(meta instanceof BundleMeta bundleMeta) || !bundleMeta.hasItems()) {
+            return false;
+        }
+        return bundleMeta.getItems().stream().anyMatch(this::containsHuntCompass);
+    }
+
+    private boolean giveHuntCompass(Player hunter, ItemStack compass) {
+        return hunter.getInventory().addItem(compass).isEmpty();
+    }
+
+    private boolean consumeOne(Player player, ItemStack expected) {
+        if (expected == null || expected.getType() == Material.AIR) {
             return false;
         }
         PlayerInventory inventory = player.getInventory();
-        if (!inventory.containsAtLeast(new ItemStack(material), 1)) {
-            return false;
+        ItemStack expectedOne = oneItem(expected);
+        ItemStack[] contents = inventory.getContents();
+        for (int i = 0; i < contents.length; i++) {
+            ItemStack item = contents[i];
+            if (item == null || item.getAmount() <= 0 || !oneItem(item).isSimilar(expectedOne)) {
+                continue;
+            }
+            item.setAmount(item.getAmount() - 1);
+            if (item.getAmount() <= 0) {
+                inventory.setItem(i, null);
+            } else {
+                inventory.setItem(i, item);
+            }
+            return true;
         }
-        inventory.removeItem(new ItemStack(material, 1));
-        return true;
+        return false;
+    }
+
+    private ItemStack oneItem(ItemStack item) {
+        ItemStack copy = item.clone();
+        copy.setAmount(1);
+        return copy;
     }
 
     public String formatLocation(TrackingState state) {

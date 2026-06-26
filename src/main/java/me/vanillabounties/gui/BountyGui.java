@@ -67,14 +67,14 @@ public final class BountyGui {
         }
 
         if (summaries.isEmpty()) {
-            inventory.setItem(22, namedItem(Material.BARRIER, Component.text("No active bounties", NamedTextColor.GRAY),
+            inventory.setItem(22, GuiItems.namedItem(Material.BARRIER, Component.text("No active bounties", NamedTextColor.GRAY),
                 List.of(Component.text("Place one with /bounty <player>.", NamedTextColor.DARK_GRAY))));
         }
         if (clampedPage > 0) {
-            inventory.setItem(PREVIOUS_SLOT, namedItem(Material.ARROW, Component.text("Previous Page", NamedTextColor.YELLOW), List.of()));
+            inventory.setItem(PREVIOUS_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Previous Page", NamedTextColor.YELLOW), List.of()));
         }
         if (clampedPage < maxPage) {
-            inventory.setItem(NEXT_SLOT, namedItem(Material.ARROW, Component.text("Next Page", NamedTextColor.YELLOW), List.of()));
+            inventory.setItem(NEXT_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Next Page", NamedTextColor.YELLOW), List.of()));
         }
 
         viewer.openInventory(inventory);
@@ -112,7 +112,7 @@ public final class BountyGui {
             }
         }
 
-        inventory.setItem(BACK_SLOT, namedItem(Material.ARROW, Component.text("Back", NamedTextColor.YELLOW), List.of()));
+        inventory.setItem(BACK_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Back", NamedTextColor.YELLOW), List.of()));
         boolean hasActiveRewards = rewards.stream().anyMatch(reward -> reward.state() == RewardState.ACTIVE);
         if (trackingState.isPresent()) {
             inventory.setItem(TRACK_SLOT, createTrackingInfoItem(trackingState.get()));
@@ -120,18 +120,18 @@ public final class BountyGui {
                 inventory.setItem(HUNT_SLOT, createHuntItem(bountyService.isHunting(viewer, targetUuid)));
             }
         } else if (settings.trackingEnabled() && hasActiveRewards) {
-            inventory.setItem(TRACK_SLOT, namedItem(settings.trackingItem(), Component.text("Track Bounty", NamedTextColor.AQUA),
+            inventory.setItem(TRACK_SLOT, GuiItems.namedItem(settings.trackingItem(), Component.text("Track Bounty", NamedTextColor.AQUA),
                 List.of(
-                    Component.text("Consumes 1x " + settings.trackingItem().name() + ".", NamedTextColor.GRAY),
+                    Component.text("Consumes 1x " + settings.trackingItem().getType().name() + ".", NamedTextColor.GRAY),
                     Component.text("Reveals public coordinates every " + formatDuration(settings.trackingPeriodMillis()) + ".", NamedTextColor.GRAY)
                 )));
         }
         if (rewards.stream().anyMatch(reward -> reward.state() == RewardState.CLAIMABLE)) {
-            inventory.setItem(CLAIM_SLOT, namedItem(Material.CHEST, Component.text("Claim All", NamedTextColor.GREEN),
+            inventory.setItem(CLAIM_SLOT, GuiItems.namedItem(Material.CHEST, Component.text("Claim All", NamedTextColor.GREEN),
                 List.of(Component.text("Claims only if every reward fits.", NamedTextColor.GRAY))));
         }
         if (clampedPage < maxPage) {
-            inventory.setItem(NEXT_SLOT, namedItem(Material.ARROW, Component.text("Next Page", NamedTextColor.YELLOW), List.of()));
+            inventory.setItem(NEXT_SLOT, GuiItems.namedItem(Material.ARROW, Component.text("Next Page", NamedTextColor.YELLOW), List.of()));
         }
 
         viewer.openInventory(inventory);
@@ -247,7 +247,7 @@ public final class BountyGui {
             meta = skullMeta;
         }
 
-        meta.displayName(Component.text(summary.targetName(), summary.hasClaimableRewards() ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
+        GuiItems.displayName(meta, Component.text(summary.targetName(), summary.hasClaimableRewards() ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
         List<Component> lore = new ArrayList<>();
         lore.add(Component.text("Active rewards: " + summary.activeRewardCount(), NamedTextColor.GRAY));
         lore.add(Component.text("Kill streak: " + summary.killStreak(), NamedTextColor.GRAY));
@@ -255,7 +255,7 @@ public final class BountyGui {
             lore.add(Component.text("Claimable by you: " + summary.claimableRewardCount(), NamedTextColor.GREEN));
         }
         lore.add(Component.text("Click to view rewards.", NamedTextColor.DARK_GRAY));
-        meta.lore(lore);
+        GuiItems.lore(meta, lore);
         item.setItemMeta(meta);
         return item;
     }
@@ -287,7 +287,7 @@ public final class BountyGui {
         }
 
         List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
-        lore.add(Component.empty());
+        lore.add(GuiItems.emptyLine());
         lore.add(Component.text("Placed by: ", NamedTextColor.GRAY).append(reward.placerDisplay()));
         if (reward.rewardCount() > 1 || reward.totalAmount() != item.getAmount()) {
             lore.add(Component.text("Total: " + reward.totalAmount() + " across " + reward.rewardCount() + " reward stack(s)", NamedTextColor.GRAY));
@@ -298,7 +298,7 @@ public final class BountyGui {
         } else {
             lore.add(Component.text("Active bounty reward", NamedTextColor.YELLOW));
         }
-        meta.lore(lore);
+        GuiItems.lore(meta, lore);
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         item.setItemMeta(meta);
         return item;
@@ -312,11 +312,11 @@ public final class BountyGui {
             lore.add(Component.text("No coordinates revealed yet.", NamedTextColor.GRAY));
         }
         lore.add(Component.text("Enabled by: " + state.enabledByName(), NamedTextColor.GRAY));
-        return namedItem(Material.SPYGLASS, Component.text("Public Tracking Active", NamedTextColor.AQUA), lore);
+        return GuiItems.namedItem(Material.SPYGLASS, Component.text("Public Tracking Active", NamedTextColor.AQUA), lore);
     }
 
     private ItemStack createHuntItem(boolean hunting) {
-        return namedItem(hunting ? Material.LIME_DYE : Material.COMPASS,
+        return GuiItems.namedItem(hunting ? Material.LIME_DYE : Material.COMPASS,
             Component.text(hunting ? "Stop Hunt" : "Hunt", hunting ? NamedTextColor.YELLOW : NamedTextColor.GREEN),
             List.of(Component.text(hunting ? "Click to stop tracking this bounty." : "Click to bind a hunt compass.", NamedTextColor.GRAY)));
     }
@@ -331,12 +331,4 @@ public final class BountyGui {
         return millis + "ms";
     }
 
-    private ItemStack namedItem(Material material, Component name, List<Component> lore) {
-        ItemStack item = new ItemStack(material);
-        ItemMeta meta = item.getItemMeta();
-        meta.displayName(name);
-        meta.lore(lore);
-        item.setItemMeta(meta);
-        return item;
-    }
 }

@@ -1,6 +1,7 @@
 package me.vanillabounties.model;
 
 import org.bukkit.Material;
+import org.bukkit.inventory.ItemStack;
 
 public record PluginSettings(
     boolean autoBountiesEnabled,
@@ -8,13 +9,13 @@ public record PluginSettings(
     long spawnKillPeriodMillis,
     boolean countRepeatKills,
     boolean allowSelfBounties,
-    Material trackingItem,
+    ItemStack trackingItem,
     long trackingPeriodMillis,
     long trackingGlowingDurationMillis,
     boolean trackingCompassEnabled,
     HuntHudMode huntHud
 ) {
     public boolean trackingEnabled() {
-        return trackingItem != null && trackingItem != Material.AIR;
+        return trackingItem != null && trackingItem.getType() != Material.AIR;
     }
 }

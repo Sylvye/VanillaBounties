@@ -40,10 +40,10 @@ public final class BountyConfirmationGui {
         Inventory inventory = Bukkit.createInventory(holder, INVENTORY_SIZE, Component.text("Confirm Bounty", NamedTextColor.GOLD));
         holder.setInventory(inventory);
 
-        inventory.setItem(CONFIRM_SLOT, namedItem(Material.LIME_DYE, Component.text("Confirm Bounty", NamedTextColor.GREEN),
+        inventory.setItem(CONFIRM_SLOT, GuiItems.namedItem(Material.LIME_DYE, Component.text("Confirm Bounty", NamedTextColor.GREEN),
             List.of(Component.text("Places the previewed item stack.", NamedTextColor.GRAY))));
         inventory.setItem(PREVIEW_SLOT, previewItem(previewItem, target, visibility));
-        inventory.setItem(CANCEL_SLOT, namedItem(Material.RED_DYE, Component.text("Cancel", NamedTextColor.RED),
+        inventory.setItem(CANCEL_SLOT, GuiItems.namedItem(Material.RED_DYE, Component.text("Cancel", NamedTextColor.RED),
             List.of(Component.text("Leaves your item in your inventory.", NamedTextColor.GRAY))));
 
         placer.openInventory(inventory);
@@ -83,21 +83,12 @@ public final class BountyConfirmationGui {
         }
 
         List<Component> lore = meta.lore() == null ? new ArrayList<>() : new ArrayList<>(meta.lore());
-        lore.add(Component.empty());
+        lore.add(GuiItems.emptyLine());
         lore.add(Component.text("Target: " + target.name(), NamedTextColor.GRAY));
         lore.add(Component.text("Visibility: " + visibility.name().toLowerCase(), NamedTextColor.GRAY));
         lore.add(Component.text("Confirm to place this exact stack.", NamedTextColor.DARK_GRAY));
-        meta.lore(lore);
+        GuiItems.lore(meta, lore);
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
-        item.setItemMeta(meta);
-        return item;
-    }
-
-    private ItemStack namedItem(Material material, Component name, List<Component> lore) {
-        ItemStack item = new ItemStack(material);
-        ItemMeta meta = item.getItemMeta();
-        meta.displayName(name);
-        meta.lore(lore);
         item.setItemMeta(meta);
         return item;
     }
