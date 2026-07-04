@@ -44,6 +44,12 @@ public final class BountyDatabase implements AutoCloseable {
     private static final String SETTING_TRACKING_GLOWING_DURATION_MILLIS = "tracking_glowing_duration_millis";
     private static final String SETTING_TRACKING_COMPASS_ENABLED = "tracking_compass_enabled";
     private static final String SETTING_HUNT_HUD = "hunt_hud";
+    private static final String SETTING_HUNT_WARNING_HUD = "hunt_warning_hud";
+    private static final String SETTING_SPOOKY_HUNT_WARNINGS_ENABLED = "spooky_hunt_warnings_enabled";
+    private static final String SETTING_HUNT_GRACE_PERIOD_MILLIS = "hunt_grace_period_millis";
+    private static final String SETTING_HUNT_REVEAL_WARNING_MILLIS = "hunt_reveal_warning_millis";
+    private static final String SETTING_HUNT_DURATION_MILLIS = "hunt_duration_millis";
+    private static final String SETTING_HUNT_TIMER_BOSSBAR_ENABLED = "hunt_timer_bossbar_enabled";
 
     private final Connection connection;
 
@@ -153,11 +159,17 @@ public final class BountyDatabase implements AutoCloseable {
                     last_x INTEGER NOT NULL DEFAULT 0,
                     last_y INTEGER NOT NULL DEFAULT 0,
                     last_z INTEGER NOT NULL DEFAULT 0,
-                    last_revealed_at INTEGER NOT NULL DEFAULT 0
+                    last_revealed_at INTEGER NOT NULL DEFAULT 0,
+                    warned_at INTEGER NOT NULL DEFAULT 0,
+                    reveal_warning_sent_for INTEGER NOT NULL DEFAULT 0,
+                    hunt_started_at INTEGER NOT NULL DEFAULT 0
                 )
                 """);
         }
         addColumnIfMissing("bounties", "visibility", "TEXT NOT NULL DEFAULT 'NORMAL'");
+        addColumnIfMissing("public_tracking", "warned_at", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing("public_tracking", "reveal_warning_sent_for", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing("public_tracking", "hunt_started_at", "INTEGER NOT NULL DEFAULT 0");
         seedAutoBountyDefaults();
     }
 
@@ -306,7 +318,13 @@ public final class BountyDatabase implements AutoCloseable {
             readLongSetting(SETTING_TRACKING_PERIOD_MILLIS, 300_000L),
             readLongSetting(SETTING_TRACKING_GLOWING_DURATION_MILLIS, 5_000L),
             readBooleanSetting(SETTING_TRACKING_COMPASS_ENABLED, true),
-            readHuntHudSetting(SETTING_HUNT_HUD, HuntHudMode.ACTION_BAR)
+            readHuntHudSetting(SETTING_HUNT_HUD, HuntHudMode.ACTION_BAR),
+            readHuntHudSetting(SETTING_HUNT_WARNING_HUD, HuntHudMode.CHAT),
+            readBooleanSetting(SETTING_SPOOKY_HUNT_WARNINGS_ENABLED, true),
+            readLongSetting(SETTING_HUNT_GRACE_PERIOD_MILLIS, 60_000L),
+            readLongSetting(SETTING_HUNT_REVEAL_WARNING_MILLIS, 10_000L),
+            readLongSetting(SETTING_HUNT_DURATION_MILLIS, 1_200_000L),
+            readBooleanSetting(SETTING_HUNT_TIMER_BOSSBAR_ENABLED, false)
         );
     }
 
@@ -352,6 +370,30 @@ public final class BountyDatabase implements AutoCloseable {
 
     public synchronized void setHuntHud(HuntHudMode mode) throws SQLException {
         setSetting(SETTING_HUNT_HUD, mode == null ? HuntHudMode.ACTION_BAR.name() : mode.name());
+    }
+
+    public synchronized void setHuntWarningHud(HuntHudMode mode) throws SQLException {
+        setSetting(SETTING_HUNT_WARNING_HUD, mode == null ? HuntHudMode.CHAT.name() : mode.name());
+    }
+
+    public synchronized void setSpookyHuntWarningsEnabled(boolean enabled) throws SQLException {
+        setSetting(SETTING_SPOOKY_HUNT_WARNINGS_ENABLED, Boolean.toString(enabled));
+    }
+
+    public synchronized void setHuntGracePeriodMillis(long millis) throws SQLException {
+        setSetting(SETTING_HUNT_GRACE_PERIOD_MILLIS, Long.toString(Math.max(0L, millis)));
+    }
+
+    public synchronized void setHuntRevealWarningMillis(long millis) throws SQLException {
+        setSetting(SETTING_HUNT_REVEAL_WARNING_MILLIS, Long.toString(Math.max(0L, millis)));
+    }
+
+    public synchronized void setHuntDurationMillis(long millis) throws SQLException {
+        setSetting(SETTING_HUNT_DURATION_MILLIS, Long.toString(Math.max(0L, millis)));
+    }
+
+    public synchronized void setHuntTimerBossBarEnabled(boolean enabled) throws SQLException {
+        setSetting(SETTING_HUNT_TIMER_BOSSBAR_ENABLED, Boolean.toString(enabled));
     }
 
     public synchronized int getKillStreak(UUID uuid) throws SQLException {
@@ -750,6 +792,42 @@ public final class BountyDatabase implements AutoCloseable {
         }
     }
 
+    public synchronized void updateTrackingWarnedAt(UUID targetUuid, long warnedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            UPDATE public_tracking
+            SET warned_at = ?
+            WHERE target_uuid = ?
+            """)) {
+            statement.setLong(1, Math.max(0L, warnedAt));
+            statement.setString(2, targetUuid.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public synchronized void updateTrackingRevealWarningSentFor(UUID targetUuid, long revealAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            UPDATE public_tracking
+            SET reveal_warning_sent_for = ?
+            WHERE target_uuid = ?
+            """)) {
+            statement.setLong(1, Math.max(0L, revealAt));
+            statement.setString(2, targetUuid.toString());
+            statement.executeUpdate();
+        }
+    }
+
+    public synchronized void updateTrackingHuntStartedAt(UUID targetUuid, long startedAt) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            UPDATE public_tracking
+            SET hunt_started_at = ?
+            WHERE target_uuid = ?
+            """)) {
+            statement.setLong(1, Math.max(0L, startedAt));
+            statement.setString(2, targetUuid.toString());
+            statement.executeUpdate();
+        }
+    }
+
     public synchronized boolean disableTracking(UUID targetUuid) throws SQLException {
         return deleteTrackingInTransaction(targetUuid) > 0;
     }
@@ -999,6 +1077,30 @@ public final class BountyDatabase implements AutoCloseable {
                  INSERT OR IGNORE INTO auto_bounty_settings(key, value)
                  VALUES (?, ?)
             """);
+             PreparedStatement huntWarningHud = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+            """);
+             PreparedStatement spookyHuntWarnings = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+            """);
+             PreparedStatement huntGracePeriod = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+            """);
+             PreparedStatement huntRevealWarning = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+            """);
+             PreparedStatement huntDuration = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+            """);
+             PreparedStatement huntTimerBossBar = connection.prepareStatement("""
+                 INSERT OR IGNORE INTO auto_bounty_settings(key, value)
+                 VALUES (?, ?)
+            """);
              PreparedStatement onKill = connection.prepareStatement("""
                  INSERT OR IGNORE INTO auto_bounty_folders(threshold, name, protected, created_at)
                  VALUES (?, 'On kill', 1, ?)
@@ -1014,6 +1116,12 @@ public final class BountyDatabase implements AutoCloseable {
             seedSetting(trackingGlowingDuration, SETTING_TRACKING_GLOWING_DURATION_MILLIS, "5000");
             seedSetting(trackingCompass, SETTING_TRACKING_COMPASS_ENABLED, "true");
             seedSetting(huntHud, SETTING_HUNT_HUD, HuntHudMode.ACTION_BAR.name());
+            seedSetting(huntWarningHud, SETTING_HUNT_WARNING_HUD, HuntHudMode.CHAT.name());
+            seedSetting(spookyHuntWarnings, SETTING_SPOOKY_HUNT_WARNINGS_ENABLED, "true");
+            seedSetting(huntGracePeriod, SETTING_HUNT_GRACE_PERIOD_MILLIS, "60000");
+            seedSetting(huntRevealWarning, SETTING_HUNT_REVEAL_WARNING_MILLIS, "10000");
+            seedSetting(huntDuration, SETTING_HUNT_DURATION_MILLIS, "1200000");
+            seedSetting(huntTimerBossBar, SETTING_HUNT_TIMER_BOSSBAR_ENABLED, "false");
             onKill.setInt(1, ON_KILL_THRESHOLD);
             onKill.setLong(2, now);
             createdOnKill = onKill.executeUpdate() == 1;
@@ -1164,7 +1272,10 @@ public final class BountyDatabase implements AutoCloseable {
             resultSet.getInt("last_x"),
             resultSet.getInt("last_y"),
             resultSet.getInt("last_z"),
-            resultSet.getLong("last_revealed_at")
+            resultSet.getLong("last_revealed_at"),
+            resultSet.getLong("warned_at"),
+            resultSet.getLong("reveal_warning_sent_for"),
+            resultSet.getLong("hunt_started_at")
         );
     }
 

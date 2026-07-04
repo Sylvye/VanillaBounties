@@ -15,6 +15,7 @@ import org.bukkit.inventory.ItemStack;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -173,6 +174,12 @@ class BountyDatabaseTest extends BukkitTestSupport {
             assertEquals(5_000L, defaults.trackingGlowingDurationMillis());
             assertTrue(defaults.trackingCompassEnabled());
             assertEquals(HuntHudMode.ACTION_BAR, defaults.huntHud());
+            assertEquals(HuntHudMode.CHAT, defaults.huntWarningHud());
+            assertTrue(defaults.spookyHuntWarningsEnabled());
+            assertEquals(60_000L, defaults.huntGracePeriodMillis());
+            assertEquals(10_000L, defaults.huntRevealWarningMillis());
+            assertEquals(1_200_000L, defaults.huntDurationMillis());
+            assertFalse(defaults.huntTimerBossBarEnabled());
 
             database.setCountNakedKills(false);
             database.setSpawnKillPeriodMillis(12_000L);
@@ -183,6 +190,12 @@ class BountyDatabaseTest extends BukkitTestSupport {
             database.setTrackingGlowingDurationMillis(2_000L);
             database.setTrackingCompassEnabled(false);
             database.setHuntHud(HuntHudMode.CHAT);
+            database.setHuntWarningHud(HuntHudMode.ACTION_BAR);
+            database.setSpookyHuntWarningsEnabled(false);
+            database.setHuntGracePeriodMillis(30_000L);
+            database.setHuntRevealWarningMillis(5_000L);
+            database.setHuntDurationMillis(600_000L);
+            database.setHuntTimerBossBarEnabled(true);
 
             PluginSettings updated = database.getPluginSettings();
             assertFalse(updated.countNakedKills());
@@ -194,6 +207,23 @@ class BountyDatabaseTest extends BukkitTestSupport {
             assertEquals(2_000L, updated.trackingGlowingDurationMillis());
             assertFalse(updated.trackingCompassEnabled());
             assertEquals(HuntHudMode.CHAT, updated.huntHud());
+            assertEquals(HuntHudMode.ACTION_BAR, updated.huntWarningHud());
+            assertFalse(updated.spookyHuntWarningsEnabled());
+            assertEquals(30_000L, updated.huntGracePeriodMillis());
+            assertEquals(5_000L, updated.huntRevealWarningMillis());
+            assertEquals(600_000L, updated.huntDurationMillis());
+            assertTrue(updated.huntTimerBossBarEnabled());
+        }
+    }
+
+    @Test
+    void legacyBossbarHuntHudFallsBackToActionBar() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            Method setSetting = BountyDatabase.class.getDeclaredMethod("setSetting", String.class, String.class);
+            setSetting.setAccessible(true);
+            setSetting.invoke(database, "hunt_hud", "BOSSBAR");
+
+            assertEquals(HuntHudMode.ACTION_BAR, database.getPluginSettings().huntHud());
         }
     }
 

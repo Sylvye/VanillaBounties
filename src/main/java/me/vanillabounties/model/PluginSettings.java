@@ -13,7 +13,13 @@ public record PluginSettings(
     long trackingPeriodMillis,
     long trackingGlowingDurationMillis,
     boolean trackingCompassEnabled,
-    HuntHudMode huntHud
+    HuntHudMode huntHud,
+    HuntHudMode huntWarningHud,
+    boolean spookyHuntWarningsEnabled,
+    long huntGracePeriodMillis,
+    long huntRevealWarningMillis,
+    long huntDurationMillis,
+    boolean huntTimerBossBarEnabled
 ) {
     public boolean trackingEnabled() {
         return trackingItem != null && trackingItem.getType() != Material.AIR;

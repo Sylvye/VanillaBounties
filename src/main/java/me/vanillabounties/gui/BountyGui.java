@@ -122,7 +122,9 @@ public final class BountyGui {
         } else if (settings.trackingEnabled() && hasActiveRewards) {
             inventory.setItem(TRACK_SLOT, GuiItems.namedItem(settings.trackingItem(), Component.text("Track Bounty", NamedTextColor.AQUA),
                 List.of(
-                    Component.text("Consumes 1x " + settings.trackingItem().getType().name() + ".", NamedTextColor.GRAY),
+                    Component.text("Consumes 1x ", NamedTextColor.GRAY)
+                        .append(bountyService.trackingItemDisplayName(settings.trackingItem()))
+                        .append(Component.text(".", NamedTextColor.GRAY)),
                     Component.text("Reveals public coordinates every " + formatDuration(settings.trackingPeriodMillis()) + ".", NamedTextColor.GRAY)
                 )));
         }

@@ -14,7 +14,10 @@ public record TrackingState(
     int x,
     int y,
     int z,
-    long lastRevealedAt
+    long lastRevealedAt,
+    long warnedAt,
+    long revealWarningSentFor,
+    long huntStartedAt
 ) {
     public boolean hasLocation() {
         return worldName != null && !worldName.isBlank() && lastRevealedAt > 0;

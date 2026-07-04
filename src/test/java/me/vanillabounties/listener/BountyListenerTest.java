@@ -52,6 +52,9 @@ class BountyListenerTest extends BukkitTestSupport {
             harness.listener().onPlayerDropItem(event);
 
             assertTrue(event.isCancelled());
+            harness.hunter().getInventory().addItem(harness.compass().clone());
+            MockBukkit.getMock().getScheduler().performOneTick();
+
             assertFalse(harness.service().isHunting(harness.hunter()));
             assertFalse(harness.service().hasHuntCompass(harness.hunter()));
         }

@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public final class BountySettingsGui {
-    private static final int INVENTORY_SIZE = 27;
+    private static final int INVENTORY_SIZE = 36;
     private static final int AUTO_BOUNTIES_SLOT = 0;
     private static final int COUNT_NAKED_KILLS_SLOT = 2;
     private static final int SPAWN_KILL_PERIOD_SLOT = 3;
@@ -32,14 +32,22 @@ public final class BountySettingsGui {
     private static final int TRACKING_GLOWING_SLOT = 13;
     private static final int TRACKING_COMPASS_SLOT = 14;
     private static final int HUNT_HUD_SLOT = 15;
+    private static final int SPOOKY_HUNT_WARNINGS_SLOT = 19;
+    private static final int HUNT_GRACE_PERIOD_SLOT = 20;
+    private static final int HUNT_REVEAL_WARNING_SLOT = 21;
+    private static final int HUNT_DURATION_SLOT = 22;
+    private static final int HUNT_TIMER_BOSSBAR_SLOT = 23;
+    private static final int HUNT_WARNING_HUD_SLOT = 24;
 
     private final Plugin plugin;
     private final BountyService bountyService;
     private final Map<UUID, PendingDuration> pendingDurations = new ConcurrentHashMap<>();
+    private boolean trackingItemInstructionFrame;
 
     public BountySettingsGui(Plugin plugin, BountyService bountyService) {
         this.plugin = plugin;
         this.bountyService = bountyService;
+        Bukkit.getScheduler().runTaskTimer(plugin, this::tickTrackingItemFlash, 20L, 20L);
     }
 
     public void open(Player admin) {
@@ -66,12 +74,19 @@ public final class BountySettingsGui {
         inventory.setItem(SPAWN_KILL_PERIOD_SLOT, durationItem("Spawn Kill Period", settings.spawnKillPeriodMillis()));
         inventory.setItem(COUNT_REPEAT_KILLS_SLOT, toggleItem("Count Repeat Kills", settings.countRepeatKills()));
         inventory.setItem(ALLOW_SELF_BOUNTIES_SLOT, toggleItem("Allow Self Bounties", settings.allowSelfBounties()));
-        inventory.setItem(TRACKING_ITEM_SLOT, trackingItem(settings));
+        inventory.setItem(TRACKING_ITEM_SLOT, trackingItem(settings, false));
         inventory.setItem(TRACKING_PERIOD_SLOT, durationItem("Tracking Period", settings.trackingPeriodMillis()));
         inventory.setItem(TRACKING_GLOWING_SLOT, durationItem("Tracking Glowing Duration", settings.trackingGlowingDurationMillis()));
         inventory.setItem(TRACKING_COMPASS_SLOT, toggleItem("Tracking Compass", settings.trackingCompassEnabled()));
-        inventory.setItem(HUNT_HUD_SLOT, GuiItems.namedItem(Material.COMPASS, Component.text("Hunt HUD: " + settings.huntHud().name(), NamedTextColor.AQUA),
-            List.of(Component.text("Click to cycle action bar, chat, bossbar.", NamedTextColor.GRAY))));
+        inventory.setItem(HUNT_HUD_SLOT, GuiItems.namedItem(Material.COMPASS, Component.text("Coordinate HUD: " + settings.huntHud().name(), NamedTextColor.AQUA),
+            List.of(Component.text("Click to cycle action bar or chat.", NamedTextColor.GRAY))));
+        inventory.setItem(SPOOKY_HUNT_WARNINGS_SLOT, toggleItem("Spooky Hunt Warnings", settings.spookyHuntWarningsEnabled()));
+        inventory.setItem(HUNT_GRACE_PERIOD_SLOT, durationItem("Hunt Grace Period", settings.huntGracePeriodMillis()));
+        inventory.setItem(HUNT_REVEAL_WARNING_SLOT, durationItem("Hunt Reveal Warning", settings.huntRevealWarningMillis()));
+        inventory.setItem(HUNT_DURATION_SLOT, durationItem("Hunt Duration", settings.huntDurationMillis()));
+        inventory.setItem(HUNT_TIMER_BOSSBAR_SLOT, toggleItem("Hunt Timer Bossbar", settings.huntTimerBossBarEnabled()));
+        inventory.setItem(HUNT_WARNING_HUD_SLOT, GuiItems.namedItem(Material.BELL, Component.text("Warning HUD: " + settings.huntWarningHud().name(), NamedTextColor.AQUA),
+            List.of(Component.text("Click to cycle action bar or chat.", NamedTextColor.GRAY))));
 
         admin.openInventory(inventory);
     }
@@ -95,6 +110,12 @@ public final class BountySettingsGui {
                 case TRACKING_GLOWING_SLOT -> promptDuration(admin, PendingDuration.TRACKING_GLOWING);
                 case TRACKING_COMPASS_SLOT -> bountyService.setTrackingCompassEnabled(!settings.trackingCompassEnabled());
                 case HUNT_HUD_SLOT -> bountyService.setHuntHud(next(settings.huntHud()));
+                case SPOOKY_HUNT_WARNINGS_SLOT -> bountyService.setSpookyHuntWarningsEnabled(!settings.spookyHuntWarningsEnabled());
+                case HUNT_GRACE_PERIOD_SLOT -> promptDuration(admin, PendingDuration.HUNT_GRACE_PERIOD);
+                case HUNT_REVEAL_WARNING_SLOT -> promptDuration(admin, PendingDuration.HUNT_REVEAL_WARNING);
+                case HUNT_DURATION_SLOT -> promptDuration(admin, PendingDuration.HUNT_DURATION);
+                case HUNT_TIMER_BOSSBAR_SLOT -> bountyService.setHuntTimerBossBarEnabled(!settings.huntTimerBossBarEnabled());
+                case HUNT_WARNING_HUD_SLOT -> bountyService.setHuntWarningHud(next(settings.huntWarningHud()));
                 default -> {
                     return;
                 }
@@ -135,6 +156,9 @@ public final class BountySettingsGui {
                     case SPAWN_KILL_PERIOD -> bountyService.setSpawnKillPeriodMillis(millis);
                     case TRACKING_PERIOD -> bountyService.setTrackingPeriodMillis(millis);
                     case TRACKING_GLOWING -> bountyService.setTrackingGlowingDurationMillis(millis);
+                    case HUNT_GRACE_PERIOD -> bountyService.setHuntGracePeriodMillis(millis);
+                    case HUNT_REVEAL_WARNING -> bountyService.setHuntRevealWarningMillis(millis);
+                    case HUNT_DURATION -> bountyService.setHuntDurationMillis(millis);
                 }
                 admin.sendMessage(Component.text("Updated bounty setting.", NamedTextColor.GREEN));
                 open(admin);
@@ -167,8 +191,7 @@ public final class BountySettingsGui {
     private HuntHudMode next(HuntHudMode mode) {
         return switch (mode) {
             case ACTION_BAR -> HuntHudMode.CHAT;
-            case CHAT -> HuntHudMode.BOSSBAR;
-            case BOSSBAR -> HuntHudMode.ACTION_BAR;
+            case CHAT -> HuntHudMode.ACTION_BAR;
         };
     }
 
@@ -214,19 +237,44 @@ public final class BountySettingsGui {
             List.of(Component.text("Click to edit in chat.", NamedTextColor.GRAY)));
     }
 
-    private ItemStack trackingItem(PluginSettings settings) {
+    private void tickTrackingItemFlash() {
+        trackingItemInstructionFrame = !trackingItemInstructionFrame;
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            Inventory inventory = player.getOpenInventory().getTopInventory();
+            if (!(inventory.getHolder() instanceof BountySettingsMenuHolder)) {
+                continue;
+            }
+            try {
+                PluginSettings settings = bountyService.getPluginSettings();
+                inventory.setItem(TRACKING_ITEM_SLOT, trackingItem(settings, trackingItemInstructionFrame));
+            } catch (SQLException exception) {
+                Bukkit.getLogger().log(Level.WARNING, "Failed to update tracking item preview", exception);
+            }
+        }
+    }
+
+    private ItemStack trackingItem(PluginSettings settings, boolean instructionFrame) {
         if (!settings.trackingEnabled()) {
             return GuiItems.namedItem(Material.BARRIER, Component.text("Tracking Item: None", NamedTextColor.RED),
                 List.of(Component.text("Click with an item to set.", NamedTextColor.GRAY)));
         }
-        return GuiItems.namedItem(settings.trackingItem(), Component.text("Tracking Item: " + settings.trackingItem().getType().name(), NamedTextColor.AQUA),
+        if (!instructionFrame) {
+            ItemStack preview = settings.trackingItem().clone();
+            preview.setAmount(1);
+            return preview;
+        }
+        return GuiItems.namedItem(Material.BOOK, Component.text("Tracking Item Instructions", NamedTextColor.AQUA),
             List.of(
-                Component.text("Click with an item to set.", NamedTextColor.GRAY),
-                Component.text("Right-click to disable tracking.", NamedTextColor.GRAY)
+                Component.text("Click with an item cursor to set.", NamedTextColor.GRAY),
+                Component.text("Right-click to disable tracking.", NamedTextColor.GRAY),
+                Component.text("Current: ", NamedTextColor.GRAY).append(bountyService.trackingItemDisplayName(settings.trackingItem()))
             ));
     }
 
     private String formatDuration(long millis) {
+        if (millis == 0) {
+            return "0s";
+        }
         if (millis % 3_600_000L == 0) {
             return (millis / 3_600_000L) + "h";
         }
@@ -242,6 +290,9 @@ public final class BountySettingsGui {
     private enum PendingDuration {
         SPAWN_KILL_PERIOD,
         TRACKING_PERIOD,
-        TRACKING_GLOWING
+        TRACKING_GLOWING,
+        HUNT_GRACE_PERIOD,
+        HUNT_REVEAL_WARNING,
+        HUNT_DURATION
     }
 }

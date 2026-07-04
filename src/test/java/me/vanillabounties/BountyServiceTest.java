@@ -5,11 +5,13 @@ import me.vanillabounties.model.BountyVisibility;
 import me.vanillabounties.model.HuntHudMode;
 import me.vanillabounties.model.KnownPlayer;
 import me.vanillabounties.model.RewardState;
+import me.vanillabounties.model.TrackingState;
 import me.vanillabounties.storage.BountyDatabase;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BundleMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -17,6 +19,7 @@ import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.entity.PlayerMock;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -312,6 +315,230 @@ class BountyServiceTest extends BukkitTestSupport {
     }
 
     @Test
+    void trackingRequirementMessageUsesExactConfiguredItemName() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setTrackingItem(namedItem(Material.RECOVERY_COMPASS, "Tracker Token"));
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+
+            BountyService.TrackingResult result = service.enablePublicTracking(tracker, target.getUniqueId(), target.getName());
+
+            assertFalse(result.success());
+            String message = PlainTextComponentSerializer.plainText().serialize(result.message());
+            assertTrue(message.contains("Tracker Token"));
+            assertFalse(message.contains("RECOVERY_COMPASS"));
+        }
+    }
+
+    @Test
+    void publicTrackingWarnsTargetAndDoesNotRevealDuringGrace() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setSpookyHuntWarningsEnabled(false);
+            database.setHuntGracePeriodMillis(60_000L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+
+            TrackingSnapshot snapshot = snapshot(database, target.getUniqueId());
+            assertTrue(snapshot.warnedAt() > 0);
+            assertEquals(0L, snapshot.lastRevealedAt());
+            assertTrue(drainMessages(target).contains("You are being hunted."));
+        }
+    }
+
+    @Test
+    void huntWarningsCanUseActionBar() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setSpookyHuntWarningsEnabled(false);
+            database.setHuntWarningHud(HuntHudMode.ACTION_BAR);
+            database.setHuntGracePeriodMillis(60_000L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+
+            assertTrue(drainMessages(target).isEmpty());
+            assertTrue(drainActionBars(target).contains("You are being hunted. Position revealed in 1m."));
+        }
+    }
+
+    @Test
+    void offlineTargetGraceStartsWhenTargetComesOnline() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            UUID targetUuid = UUID.randomUUID();
+            KnownPlayer knownTarget = new KnownPlayer(targetUuid, "Target", 1L);
+            database.setSpookyHuntWarningsEnabled(false);
+            database.setHuntGracePeriodMillis(60_000L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(tracker, targetUuid, knownTarget.name()).success());
+            assertEquals(0L, snapshot(database, targetUuid).warnedAt());
+
+            PlayerMock target = new PlayerMock(MockBukkit.getMock(), "Target", targetUuid);
+            MockBukkit.getMock().addPlayer(target);
+            MockBukkit.getMock().getScheduler().performTicks(20L);
+
+            assertTrue(snapshot(database, targetUuid).warnedAt() > 0);
+            assertTrue(drainMessages(target).contains("You are being hunted."));
+        }
+    }
+
+    @Test
+    void revealWarningCanBeSentOrDisabled() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setSpookyHuntWarningsEnabled(false);
+            database.setHuntGracePeriodMillis(1_000L);
+            database.setHuntRevealWarningMillis(1_000L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+            List<String> messages = drainMessages(target);
+            long revealWarnings = messages.stream()
+                .filter(message -> message.startsWith("Your position will be revealed in "))
+                .count();
+            assertEquals(2L, revealWarnings);
+
+            database.disableTracking(target.getUniqueId());
+            database.setHuntRevealWarningMillis(0L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+            messages = drainMessages(target);
+            revealWarnings = messages.stream()
+                .filter(message -> message.startsWith("Your position will be revealed in "))
+                .count();
+            assertEquals(1L, revealWarnings);
+        }
+    }
+
+    @Test
+    void positionRevealNotifiesHuntedPlayerInConfiguredHud() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setSpookyHuntWarningsEnabled(false);
+            database.setHuntGracePeriodMillis(0L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+            assertTrue(drainMessages(target).contains("Your position has been revealed."));
+
+            database.disableTracking(target.getUniqueId());
+            database.setHuntWarningHud(HuntHudMode.ACTION_BAR);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+            assertTrue(drainActionBars(target).contains("Your position has been revealed."));
+        }
+    }
+
+    @Test
+    void huntDurationExpiresTrackingWithoutClearingBounty() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock hunter = MockBukkit.getMock().addPlayer("Hunter");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setHuntGracePeriodMillis(0L);
+            database.setHuntDurationMillis(1L);
+            database.setHuntTimerBossBarEnabled(true);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(hunter, target.getUniqueId(), target.getName()).success());
+            assertTrue(service.toggleHunt(hunter, target.getUniqueId(), target.getName()).success());
+            assertTrue(service.isHunting(hunter, target.getUniqueId()));
+
+            Thread.sleep(5L);
+            MockBukkit.getMock().getScheduler().performTicks(20L);
+
+            assertTrue(database.getTrackingState(target.getUniqueId()).isEmpty());
+            assertTrue(database.hasActiveBounty(target.getUniqueId()));
+            assertFalse(service.isHunting(hunter));
+            assertFalse(service.hasHuntCompass(hunter));
+            assertTrue(hunter.getBossBars().isEmpty());
+            assertTrue(target.getBossBars().isEmpty());
+        }
+    }
+
+    @Test
+    void huntTimerBossBarUsesMinuteSecondDurationParts() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock tracker = MockBukkit.getMock().addPlayer("Tracker");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setHuntGracePeriodMillis(0L);
+            database.setHuntDurationMillis(1_200_000L);
+            database.setHuntTimerBossBarEnabled(true);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            tracker.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+
+            assertTrue(service.enablePublicTracking(tracker, target.getUniqueId(), target.getName()).success());
+
+            String bossBarName = PlainTextComponentSerializer.plainText().serialize(target.getBossBars().iterator().next().name());
+            assertTrue(bossBarName.contains("20m 0s"));
+        }
+    }
+
+    @Test
+    void huntCompassCannotBePlacedAsBountyEvenInsideBundle() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            PlayerMock hunter = MockBukkit.getMock().addPlayer("Hunter");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
+            database.setHuntGracePeriodMillis(0L);
+            database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
+            hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
+            assertTrue(service.enablePublicTracking(hunter, target.getUniqueId(), target.getName()).success());
+            assertTrue(service.toggleHunt(hunter, target.getUniqueId(), target.getName()).success());
+            ItemStack compass = firstHuntCompass(service, hunter);
+
+            placer.getInventory().setItemInMainHand(compass.clone());
+            assertFalse(service.placeBounty(placer, knownTarget).success());
+
+            ItemStack bundle = new ItemStack(Material.BUNDLE, 1);
+            BundleMeta meta = (BundleMeta) bundle.getItemMeta();
+            meta.addItem(compass.clone());
+            bundle.setItemMeta(meta);
+            placer.getInventory().setItemInMainHand(bundle);
+
+            assertFalse(service.placeBounty(placer, knownTarget).success());
+        }
+    }
+
+    @Test
     void disablingTrackingItemClearsLiveTrackingWithoutClearingBounty() throws Exception {
         try (BountyDatabase database = openDatabase()) {
             PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
@@ -319,7 +546,8 @@ class BountyServiceTest extends BukkitTestSupport {
             PlayerMock hunter = MockBukkit.getMock().addPlayer("Hunter");
             BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
             KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
-            database.setHuntHud(HuntHudMode.BOSSBAR);
+            database.setHuntGracePeriodMillis(0L);
+            database.setHuntTimerBossBarEnabled(true);
             database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.DIAMOND, 1), 10L);
             hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
             hunter.getInventory().addItem(new ItemStack(Material.COMPASS, 1));
@@ -348,7 +576,8 @@ class BountyServiceTest extends BukkitTestSupport {
             PlayerMock hunter = MockBukkit.getMock().addPlayer("Hunter");
             BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
             KnownPlayer knownTarget = new KnownPlayer(target.getUniqueId(), target.getName(), 1L);
-            database.setHuntHud(HuntHudMode.BOSSBAR);
+            database.setHuntGracePeriodMillis(0L);
+            database.setHuntTimerBossBarEnabled(true);
             database.insertActiveBounty(knownTarget, placer.getUniqueId(), placer.getName(), new ItemStack(Material.EMERALD, 1), 10L);
             hunter.getInventory().addItem(new ItemStack(Material.RECOVERY_COMPASS, 1));
             hunter.getInventory().addItem(new ItemStack(Material.COMPASS, 1));
@@ -454,6 +683,52 @@ class BountyServiceTest extends BukkitTestSupport {
         return database;
     }
 
+    private TrackingSnapshot snapshot(BountyDatabase database, UUID targetUuid) throws Exception {
+        TrackingState state = database.getTrackingState(targetUuid).orElseThrow();
+        return new TrackingSnapshot(state.lastRevealedAt(), state.warnedAt());
+    }
+
+    private List<String> drainMessages(PlayerMock player) {
+        PlainTextComponentSerializer serializer = PlainTextComponentSerializer.plainText();
+        List<String> messages = new ArrayList<>();
+        while (true) {
+            try {
+                Component message = player.nextComponentMessage();
+                if (message == null) {
+                    return messages;
+                }
+                messages.add(serializer.serialize(message));
+            } catch (AssertionError exception) {
+                return messages;
+            }
+        }
+    }
+
+    private List<String> drainActionBars(PlayerMock player) {
+        PlainTextComponentSerializer serializer = PlainTextComponentSerializer.plainText();
+        List<String> messages = new ArrayList<>();
+        while (true) {
+            try {
+                Component message = player.nextActionBar();
+                if (message == null) {
+                    return messages;
+                }
+                messages.add(serializer.serialize(message));
+            } catch (AssertionError exception) {
+                return messages;
+            }
+        }
+    }
+
+    private ItemStack firstHuntCompass(BountyService service, PlayerMock player) {
+        for (ItemStack item : player.getInventory().getContents()) {
+            if (service.isHuntCompass(item)) {
+                return item.clone();
+            }
+        }
+        throw new AssertionError("hunter does not have a hunt compass");
+    }
+
     private int countMaterial(PlayerMock player, Material material) {
         return player.getInventory().all(material).values().stream().mapToInt(ItemStack::getAmount).sum();
     }
@@ -483,5 +758,8 @@ class BountyServiceTest extends BukkitTestSupport {
             }
         }
         player.getInventory().setStorageContents(contents);
+    }
+
+    private record TrackingSnapshot(long lastRevealedAt, long warnedAt) {
     }
 }

@@ -90,6 +90,7 @@ public final class BountyListener implements Listener {
         }
         event.setCancelled(true);
         event.getItemDrop().remove();
+        bountyService.removeHuntCompasses(event.getPlayer());
         bountyService.stopHuntForDroppedCompass(event.getPlayer());
     }
 

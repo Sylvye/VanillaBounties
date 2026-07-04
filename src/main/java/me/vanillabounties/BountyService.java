@@ -40,15 +40,27 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 
 public final class BountyService {
+    private static final List<String> SPOOKY_HUNT_WARNINGS = List.of(
+        "The hair on your neck prickles.",
+        "You feel eyes observing you from afar...",
+        "You hear your name chanted in the distance...",
+        "The air feels far too still around you.",
+        "Goosebumps crawl up your arms...",
+        "You can't shake the feeling you're being followed.",
+        "A sense of dread creeps over you."
+    );
+
     private final Plugin plugin;
     private final BountyDatabase database;
     private final NamespacedKey huntCompassKey;
     private final Map<UUID, Long> lastRespawnAt = new HashMap<>();
     private final Map<UUID, UUID> huntedTargets = new HashMap<>();
     private final Map<UUID, BossBar> huntBossBars = new HashMap<>();
+    private final Map<UUID, BossBar> huntedBossBars = new HashMap<>();
     private final BukkitTask trackingTask;
 
     public BountyService(Plugin plugin, BountyDatabase database) {
@@ -120,6 +132,9 @@ public final class BountyService {
         ItemStack hand = placer.getInventory().getItemInMainHand();
         if (hand.getType() == Material.AIR || hand.getAmount() <= 0) {
             return PlaceResult.failure(Component.text("Hold the item stack you want to place as a bounty.", NamedTextColor.RED));
+        }
+        if (containsHuntCompass(hand)) {
+            return PlaceResult.failure(Component.text("You cannot place a hunt compass as a bounty.", NamedTextColor.RED));
         }
         if (expectedItem != null && !sameStack(hand, expectedItem)) {
             return PlaceResult.failure(Component.text("The held item changed. Run /bounty again.", NamedTextColor.RED));
@@ -399,6 +414,36 @@ public final class BountyService {
         database.setHuntHud(mode);
     }
 
+    public void setHuntWarningHud(HuntHudMode mode) throws SQLException {
+        database.setHuntWarningHud(mode);
+    }
+
+    public void setSpookyHuntWarningsEnabled(boolean enabled) throws SQLException {
+        database.setSpookyHuntWarningsEnabled(enabled);
+    }
+
+    public void setHuntGracePeriodMillis(long millis) throws SQLException {
+        database.setHuntGracePeriodMillis(millis);
+    }
+
+    public void setHuntRevealWarningMillis(long millis) throws SQLException {
+        database.setHuntRevealWarningMillis(millis);
+    }
+
+    public void setHuntDurationMillis(long millis) throws SQLException {
+        database.setHuntDurationMillis(millis);
+        if (millis <= 0) {
+            hideAllHuntTimerBossBars();
+        }
+    }
+
+    public void setHuntTimerBossBarEnabled(boolean enabled) throws SQLException {
+        database.setHuntTimerBossBarEnabled(enabled);
+        if (!enabled) {
+            hideAllHuntTimerBossBars();
+        }
+    }
+
     public Optional<TrackingState> getTrackingState(UUID targetUuid) throws SQLException {
         return database.getTrackingState(targetUuid);
     }
@@ -431,7 +476,9 @@ public final class BountyService {
 
         ItemStack trackingItem = settings.trackingItem();
         if (!consumeOne(viewer, trackingItem)) {
-            return TrackingResult.failure(Component.text("You need 1x " + trackingItem.getType().name() + " to track that bounty.", NamedTextColor.RED));
+            return TrackingResult.failure(Component.text("You need 1x ", NamedTextColor.RED)
+                .append(trackingItemDisplayName(trackingItem))
+                .append(Component.text(" to track that bounty.", NamedTextColor.RED)));
         }
 
         try {
@@ -451,7 +498,14 @@ public final class BountyService {
             .append(Component.text(" started public tracking on ", NamedTextColor.GRAY))
             .append(Component.text(targetName, NamedTextColor.RED))
             .append(Component.text(".", NamedTextColor.GRAY)));
-        revealTrackedTarget(targetUuid, targetName, settings);
+        try {
+            Optional<TrackingState> state = database.getTrackingState(targetUuid);
+            if (state.isPresent()) {
+                tickTrackingState(state.get(), settings, System.currentTimeMillis());
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().log(Level.WARNING, "Failed to start hunt grace period", exception);
+        }
         return TrackingResult.success(Component.text("Started public tracking on " + targetName + ".", NamedTextColor.GREEN));
     }
 
@@ -484,6 +538,9 @@ public final class BountyService {
         if (!updateHuntCompass(hunter, trackingState)) {
             stopHunt(hunter, Component.text("Make inventory space before starting a hunt.", NamedTextColor.YELLOW));
             return HuntResult.failure(Component.text("Make inventory space before starting a hunt.", NamedTextColor.RED));
+        }
+        if (trackingState.huntStartedAt() > 0) {
+            updateHuntTimerBossBars(trackingState, settings, trackingState.huntStartedAt(), System.currentTimeMillis());
         }
         sendHuntHud(hunter, settings, Component.text("Hunting " + targetName + ".", NamedTextColor.GOLD));
         return HuntResult.success(Component.text("Hunting " + targetName + ".", NamedTextColor.GREEN));
@@ -614,7 +671,9 @@ public final class BountyService {
     }
 
     public void stopHuntForDroppedCompass(Player hunter) {
+        removeHuntCompasses(hunter);
         stopHunt(hunter, Component.text("Hunt stopped because the compass was dropped.", NamedTextColor.YELLOW));
+        Bukkit.getScheduler().runTask(plugin, () -> removeHuntCompasses(hunter));
     }
 
     private void shutdownTracking(Component message) throws SQLException {
@@ -627,6 +686,7 @@ public final class BountyService {
         for (Player player : Bukkit.getOnlinePlayers()) {
             stopHunt(player, null);
         }
+        hideAllHuntTimerBossBars();
     }
 
     private void tickTracking() {
@@ -642,15 +702,102 @@ public final class BountyService {
                 if (!database.hasActiveBounty(state.targetUuid())) {
                     database.disableTracking(state.targetUuid());
                     clearHuntsForTarget(state.targetUuid(), Component.text("The bounty on " + state.targetName() + " reset.", NamedTextColor.YELLOW));
+                    hideHuntTimerBossBarForTarget(state.targetUuid());
                     continue;
                 }
-                if (now - state.lastRevealedAt() >= settings.trackingPeriodMillis()) {
-                    revealTrackedTarget(state.targetUuid(), state.targetName(), settings);
-                }
+                tickTrackingState(state, settings, now);
             }
         } catch (SQLException exception) {
             plugin.getLogger().log(Level.WARNING, "Failed to tick public bounty tracking", exception);
         }
+    }
+
+    private void tickTrackingState(TrackingState state, PluginSettings settings, long now) throws SQLException {
+        long warnedAt = state.warnedAt();
+        if (warnedAt <= 0) {
+            Player target = Bukkit.getPlayer(state.targetUuid());
+            if (target == null || !target.isOnline()) {
+                hideHuntTimerBossBarForTarget(state.targetUuid());
+                return;
+            }
+            sendInitialHuntWarning(target, settings);
+            warnedAt = now;
+            database.updateTrackingWarnedAt(state.targetUuid(), warnedAt);
+        }
+
+        long huntStartsAt = warnedAt + settings.huntGracePeriodMillis();
+        if (now < huntStartsAt) {
+            sendRevealWarningIfDue(state, settings, huntStartsAt, now);
+            hideHuntTimerBossBars(state);
+            return;
+        }
+
+        long huntStartedAt = state.huntStartedAt();
+        if (huntStartedAt <= 0) {
+            huntStartedAt = huntStartsAt;
+            database.updateTrackingHuntStartedAt(state.targetUuid(), huntStartedAt);
+        }
+
+        if (settings.huntDurationMillis() > 0 && now - huntStartedAt >= settings.huntDurationMillis()) {
+            endTrackedHunt(state);
+            return;
+        }
+
+        updateHuntTimerBossBars(state, settings, huntStartedAt, now);
+        long nextRevealAt = state.lastRevealedAt() <= 0
+            ? huntStartsAt
+            : state.lastRevealedAt() + settings.trackingPeriodMillis();
+        if (now >= nextRevealAt) {
+            revealTrackedTarget(state.targetUuid(), state.targetName(), settings);
+            return;
+        }
+        sendRevealWarningIfDue(state, settings, nextRevealAt, now);
+    }
+
+    private void sendInitialHuntWarning(Player target, PluginSettings settings) {
+        String warning = settings.spookyHuntWarningsEnabled()
+            ? SPOOKY_HUNT_WARNINGS.get(ThreadLocalRandom.current().nextInt(SPOOKY_HUNT_WARNINGS.size()))
+            : "You are being hunted.";
+        if (settings.huntWarningHud() == HuntHudMode.ACTION_BAR) {
+            target.sendActionBar(Component.text(warning + " Position revealed in " + formatDuration(settings.huntGracePeriodMillis()) + ".", NamedTextColor.RED));
+            return;
+        }
+        target.sendMessage(Component.text(warning, NamedTextColor.RED));
+        sendHuntWarningHud(target, settings, Component.text(
+            "Your position will be revealed in " + formatDuration(settings.huntGracePeriodMillis()) + ".",
+            NamedTextColor.YELLOW
+        ));
+    }
+
+    private void sendRevealWarningIfDue(TrackingState state, PluginSettings settings, long revealAt, long now) throws SQLException {
+        long warningMillis = settings.huntRevealWarningMillis();
+        if (warningMillis <= 0 || revealAt <= now || state.revealWarningSentFor() == revealAt) {
+            return;
+        }
+        if (now < revealAt - warningMillis) {
+            return;
+        }
+        Player target = Bukkit.getPlayer(state.targetUuid());
+        if (target == null || !target.isOnline()) {
+            return;
+        }
+        sendHuntWarningHud(target, settings, Component.text(
+            "Your position will be revealed in " + formatDuration(revealAt - now) + ".",
+            NamedTextColor.YELLOW
+        ));
+        database.updateTrackingRevealWarningSentFor(state.targetUuid(), revealAt);
+    }
+
+    private void endTrackedHunt(TrackingState state) throws SQLException {
+        if (!database.disableTracking(state.targetUuid())) {
+            return;
+        }
+        Player target = Bukkit.getPlayer(state.targetUuid());
+        if (target != null && target.isOnline()) {
+            target.sendMessage(Component.text("The hunt on you has ended.", NamedTextColor.YELLOW));
+        }
+        clearHuntsForTarget(state.targetUuid(), Component.text("The hunt on " + state.targetName() + " ended.", NamedTextColor.YELLOW));
+        hideHuntTimerBossBarForTarget(state.targetUuid());
     }
 
     private void revealTrackedTarget(UUID targetUuid, String targetName, PluginSettings settings) {
@@ -680,6 +827,8 @@ public final class BountyService {
                 int ticks = Math.max(1, (int) (glowMillis / 50L));
                 target.addPotionEffect(new PotionEffect(PotionEffectType.GLOWING, ticks, 0, false, false, false));
             }
+
+            sendHuntWarningHud(target, settings, Component.text("Your position has been revealed.", NamedTextColor.YELLOW));
 
             Component message = Component.text(targetName + " revealed at " + formatLocation(updated) + ".", NamedTextColor.GOLD);
             notifyHunters(targetUuid, message, updated);
@@ -740,14 +889,86 @@ public final class BountyService {
             hunter.sendMessage(message);
             return;
         }
-        if (settings.huntHud() == HuntHudMode.BOSSBAR) {
-            BossBar bossBar = huntBossBars.computeIfAbsent(hunter.getUniqueId(), ignored ->
-                BossBar.bossBar(message, 1.0f, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS));
-            bossBar.name(message);
-            hunter.showBossBar(bossBar);
+        hunter.sendActionBar(message);
+    }
+
+    private void sendHuntWarningHud(Player target, PluginSettings settings, Component message) {
+        if (settings.huntWarningHud() == HuntHudMode.ACTION_BAR) {
+            target.sendActionBar(message);
             return;
         }
-        hunter.sendActionBar(message);
+        target.sendMessage(message);
+    }
+
+    private void updateHuntTimerBossBars(TrackingState state, PluginSettings settings, long huntStartedAt, long now) {
+        if (!settings.huntTimerBossBarEnabled() || settings.huntDurationMillis() <= 0) {
+            hideHuntTimerBossBars(state);
+            return;
+        }
+
+        long remainingMillis = Math.max(0L, huntStartedAt + settings.huntDurationMillis() - now);
+        float progress = Math.max(0.0f, Math.min(1.0f, (float) remainingMillis / (float) settings.huntDurationMillis()));
+        Player target = Bukkit.getPlayer(state.targetUuid());
+        if (target != null && target.isOnline()) {
+            BossBar targetBar = huntedBossBars.computeIfAbsent(state.targetUuid(), ignored ->
+                BossBar.bossBar(Component.empty(), progress, BossBar.Color.RED, BossBar.Overlay.PROGRESS));
+            targetBar.name(Component.text("Hunted: " + formatTimerDuration(remainingMillis) + " left", NamedTextColor.RED));
+            targetBar.progress(progress);
+            target.showBossBar(targetBar);
+        } else {
+            hideHuntTimerBossBarForTarget(state.targetUuid());
+        }
+
+        for (Map.Entry<UUID, UUID> entry : new ArrayList<>(huntedTargets.entrySet())) {
+            if (!state.targetUuid().equals(entry.getValue())) {
+                continue;
+            }
+            Player hunter = Bukkit.getPlayer(entry.getKey());
+            if (hunter == null || !hunter.isOnline()) {
+                huntedTargets.remove(entry.getKey());
+                continue;
+            }
+            BossBar hunterBar = huntBossBars.computeIfAbsent(entry.getKey(), ignored ->
+                BossBar.bossBar(Component.empty(), progress, BossBar.Color.YELLOW, BossBar.Overlay.PROGRESS));
+            hunterBar.name(Component.text("Hunt: " + state.targetName() + " - " + formatTimerDuration(remainingMillis) + " left", NamedTextColor.GOLD));
+            hunterBar.progress(progress);
+            hunter.showBossBar(hunterBar);
+        }
+    }
+
+    private void hideHuntTimerBossBars(TrackingState state) {
+        hideHuntTimerBossBarForTarget(state.targetUuid());
+        for (Map.Entry<UUID, UUID> entry : new ArrayList<>(huntedTargets.entrySet())) {
+            if (!state.targetUuid().equals(entry.getValue())) {
+                continue;
+            }
+            Player hunter = Bukkit.getPlayer(entry.getKey());
+            BossBar bossBar = huntBossBars.remove(entry.getKey());
+            if (hunter != null && bossBar != null) {
+                hunter.hideBossBar(bossBar);
+            }
+        }
+    }
+
+    private void hideHuntTimerBossBarForTarget(UUID targetUuid) {
+        BossBar bossBar = huntedBossBars.remove(targetUuid);
+        Player target = Bukkit.getPlayer(targetUuid);
+        if (target != null && bossBar != null) {
+            target.hideBossBar(bossBar);
+        }
+    }
+
+    private void hideAllHuntTimerBossBars() {
+        for (UUID hunterUuid : new ArrayList<>(huntBossBars.keySet())) {
+            Player hunter = Bukkit.getPlayer(hunterUuid);
+            BossBar bossBar = huntBossBars.remove(hunterUuid);
+            if (hunter != null && bossBar != null) {
+                hunter.hideBossBar(bossBar);
+            }
+        }
+        for (UUID targetUuid : new ArrayList<>(huntedBossBars.keySet())) {
+            hideHuntTimerBossBarForTarget(targetUuid);
+        }
     }
 
     private void clearHuntsForTarget(UUID targetUuid, Component message) {
@@ -760,8 +981,10 @@ public final class BountyService {
                 stopHunt(hunter, message);
             } else {
                 huntedTargets.remove(hunterUuid);
+                huntBossBars.remove(hunterUuid);
             }
         }
+        hideHuntTimerBossBarForTarget(targetUuid);
     }
 
     private void clearAllHunts(Component message) {
@@ -771,8 +994,10 @@ public final class BountyService {
             boolean affected = affectedHunters.contains(player.getUniqueId()) || hasHuntCompass(player);
             stopHunt(player, affected ? message : null);
         }
+        hideAllHuntTimerBossBars();
         huntedTargets.clear();
         huntBossBars.clear();
+        huntedBossBars.clear();
     }
 
     private void stopHunt(Player hunter, Component message) {
@@ -868,6 +1093,43 @@ public final class BountyService {
             return "unknown";
         }
         return state.worldName() + " " + state.x() + ", " + state.y() + ", " + state.z();
+    }
+
+    public Component trackingItemDisplayName(ItemStack item) {
+        if (item == null || item.getType() == Material.AIR) {
+            return Component.text("None", NamedTextColor.RED);
+        }
+        return item.effectiveName()
+            .colorIfAbsent(NamedTextColor.YELLOW)
+            .hoverEvent(item.asHoverEvent(showItem -> showItem));
+    }
+
+    private String formatDuration(long millis) {
+        long seconds = Math.max(0L, (millis + 999L) / 1_000L);
+        if (seconds == 0) {
+            return "0s";
+        }
+        if (seconds % 3_600L == 0) {
+            return (seconds / 3_600L) + "h";
+        }
+        if (seconds % 60L == 0) {
+            return (seconds / 60L) + "m";
+        }
+        return seconds + "s";
+    }
+
+    private String formatTimerDuration(long millis) {
+        long totalSeconds = Math.max(0L, (millis + 999L) / 1_000L);
+        long hours = totalSeconds / 3_600L;
+        long minutes = (totalSeconds % 3_600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        if (hours > 0) {
+            return hours + "h " + minutes + "m " + seconds + "s";
+        }
+        if (minutes > 0) {
+            return minutes + "m " + seconds + "s";
+        }
+        return seconds + "s";
     }
 
     public void giveOrDrop(Player player, ItemStack item) {

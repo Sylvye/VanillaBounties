@@ -34,6 +34,10 @@ public final class BountyConfirmationGui {
             placer.sendMessage(Component.text("Hold the item stack you want to place as a bounty.", NamedTextColor.RED));
             return;
         }
+        if (bountyService != null && bountyService.containsHuntCompass(hand)) {
+            placer.sendMessage(Component.text("You cannot place a hunt compass as a bounty.", NamedTextColor.RED));
+            return;
+        }
 
         ItemStack previewItem = hand.clone();
         BountyConfirmationMenuHolder holder = new BountyConfirmationMenuHolder(placer.getUniqueId(), target, visibility, previewItem);

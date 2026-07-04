@@ -12,14 +12,27 @@ import org.bukkit.entity.Player;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 public final class BountiesCommand implements CommandExecutor, TabCompleter {
+    private static final long MENU_COOLDOWN_MILLIS = 3_000L;
+
     private final BountyGui bountyGui;
     private final BountySettingsGui bountySettingsGui;
+    private final LongSupplier clock;
+    private final Map<UUID, Long> lastMenuOpenAt = new ConcurrentHashMap<>();
 
     public BountiesCommand(BountyGui bountyGui, BountySettingsGui bountySettingsGui) {
+        this(bountyGui, bountySettingsGui, System::currentTimeMillis);
+    }
+
+    BountiesCommand(BountyGui bountyGui, BountySettingsGui bountySettingsGui, LongSupplier clock) {
         this.bountyGui = bountyGui;
         this.bountySettingsGui = bountySettingsGui;
+        this.clock = clock;
     }
 
     @Override
@@ -48,8 +61,20 @@ public final class BountiesCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
+        long now = clock.getAsLong();
+        Long lastOpenAt = lastMenuOpenAt.get(player.getUniqueId());
+        long remaining = lastOpenAt == null ? 0L : MENU_COOLDOWN_MILLIS - (now - lastOpenAt);
+        if (lastOpenAt != null && remaining > 0) {
+            player.sendMessage(Component.text("Wait " + formatSeconds(remaining) + " before opening the bounty menu again.", NamedTextColor.YELLOW));
+            return true;
+        }
+        lastMenuOpenAt.put(player.getUniqueId(), now);
         bountyGui.openBoard(player, 0);
         return true;
+    }
+
+    private String formatSeconds(long millis) {
+        return Math.max(1L, (millis + 999L) / 1_000L) + "s";
     }
 
     @Override
