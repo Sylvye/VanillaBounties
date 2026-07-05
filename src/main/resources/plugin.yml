@@ -14,7 +14,7 @@ commands:
   bounties:
     description: Open the bounty board.
     usage: /bounties [menu|settings]
-    aliases: [bs]
+    aliases: [bs, vb]
   autobounties:
     description: Manage server automatic bounties.
     usage: /autobounties [add <kills>|remove <kills>]
