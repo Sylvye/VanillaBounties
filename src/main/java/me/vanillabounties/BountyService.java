@@ -150,7 +150,7 @@ public final class BountyService {
             }
             return PlaceResult.success(Component.text("Placed ")
                 .color(NamedTextColor.GREEN)
-                .append(Component.text(escrowed.getAmount() + "x " + escrowed.getType().name(), NamedTextColor.YELLOW))
+                .append(itemComponent(escrowed))
                 .append(Component.text(" on " + target.name() + ".", NamedTextColor.GREEN)));
         } catch (SQLException exception) {
             giveOrDrop(placer, escrowed);

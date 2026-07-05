@@ -25,6 +25,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BountyServiceTest extends BukkitTestSupport {
@@ -102,6 +103,28 @@ class BountyServiceTest extends BukkitTestSupport {
             List<BountyReward> rewards = database.listVisibleRewards(target.getUniqueId(), placer.getUniqueId());
             assertEquals(1, rewards.size());
             assertEquals(3, rewards.getFirst().item().getAmount());
+        }
+    }
+
+    @Test
+    void placeResultUsesHoverableItemStackInConfirmationMessage() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PlayerMock placer = MockBukkit.getMock().addPlayer("Placer");
+            PlayerMock target = MockBukkit.getMock().addPlayer("Target");
+            BountyService service = new BountyService(MockBukkit.createMockPlugin(), database);
+            ItemStack bounty = namedItem(Material.DIAMOND_SWORD, "Sharp Prize");
+            placer.getInventory().setItemInMainHand(bounty);
+
+            BountyService.PlaceResult result = service.placeBounty(
+                placer,
+                new KnownPlayer(target.getUniqueId(), target.getName(), 1L)
+            );
+
+            assertTrue(result.success());
+            String message = PlainTextComponentSerializer.plainText().serialize(result.message());
+            assertTrue(message.contains("Sharp Prize"));
+            assertFalse(message.contains("DIAMOND_SWORD"));
+            assertNotNull(findHover(result.message()));
         }
     }
 
@@ -739,6 +762,19 @@ class BountyServiceTest extends BukkitTestSupport {
         meta.displayName(Component.text(name));
         item.setItemMeta(meta);
         return item;
+    }
+
+    private Object findHover(Component component) {
+        if (component.hoverEvent() != null) {
+            return component.hoverEvent();
+        }
+        for (Component child : component.children()) {
+            Object hover = findHover(child);
+            if (hover != null) {
+                return hover;
+            }
+        }
+        return null;
     }
 
     private boolean hasSimilarItem(PlayerMock player, ItemStack expected) {
