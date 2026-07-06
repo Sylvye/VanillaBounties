@@ -594,27 +594,7 @@ public final class BountyService {
         }
 
         List<Long> rewardIds = rewards.stream().map(BountyReward::id).toList();
-        try {
-            boolean locked = database.markRewardsDelivering(rewardIds, claimant.getUniqueId());
-            if (!locked) {
-                return ClaimResult.failure(Component.text("Those rewards were already claimed or changed. Reopen /bounties.", NamedTextColor.RED));
-            }
-
-            claimant.getInventory().setStorageContents(plannedContents.get());
-            database.markRewardsClaimed(rewardIds, claimant.getUniqueId(), System.currentTimeMillis());
-            return ClaimResult.success(Component.text("Claimed " + rewards.size() + " bounty reward(s).", NamedTextColor.GREEN));
-        } catch (SQLException exception) {
-            plugin.getLogger().log(Level.SEVERE, "Failed to claim bounty rewards for " + claimant.getName(), exception);
-            try {
-                database.resetDeliveringRewards(rewardIds, claimant.getUniqueId());
-            } catch (SQLException resetException) {
-                plugin.getLogger().log(Level.SEVERE, "Failed to reset undelivered bounty rewards", resetException);
-            }
-            return ClaimResult.failure(Component.text("Claim failed before delivery. Try again.", NamedTextColor.RED));
-        } catch (RuntimeException exception) {
-            plugin.getLogger().log(Level.SEVERE, "Failed while delivering bounty rewards to " + claimant.getName(), exception);
-            return ClaimResult.failure(Component.text("Claim failed during delivery. Contact an admin.", NamedTextColor.RED));
-        }
+        return claimPlannedRewards(claimant, rewardIds, rewards.size(), plannedContents.get(), "bounty rewards");
     }
 
     public ClaimResult claimReward(Player claimant, UUID targetUuid, long rewardId) {
@@ -643,27 +623,53 @@ public final class BountyService {
             return ClaimResult.failure(Component.text("Make enough inventory space to claim that reward stack.", NamedTextColor.RED));
         }
 
+        return claimPlannedRewards(claimant, rewardIds, rewards.size(), plannedContents.get(), "selected bounty rewards");
+    }
+
+    private ClaimResult claimPlannedRewards(Player claimant, List<Long> rewardIds, int rewardCount, ItemStack[] plannedContents, String logLabel) {
+        ItemStack[] originalContents = cloneStorageContents(claimant.getInventory().getStorageContents());
         try {
             boolean locked = database.markRewardsDelivering(rewardIds, claimant.getUniqueId());
             if (!locked) {
                 return ClaimResult.failure(Component.text("Those rewards were already claimed or changed. Reopen /bounties.", NamedTextColor.RED));
             }
 
-            claimant.getInventory().setStorageContents(plannedContents.get());
             database.markRewardsClaimed(rewardIds, claimant.getUniqueId(), System.currentTimeMillis());
-            return ClaimResult.success(Component.text("Claimed " + rewards.size() + " bounty reward(s).", NamedTextColor.GREEN));
         } catch (SQLException exception) {
-            plugin.getLogger().log(Level.SEVERE, "Failed to claim selected bounty rewards for " + claimant.getName(), exception);
-            try {
-                database.resetDeliveringRewards(rewardIds, claimant.getUniqueId());
-            } catch (SQLException resetException) {
-                plugin.getLogger().log(Level.SEVERE, "Failed to reset undelivered bounty rewards", resetException);
-            }
+            plugin.getLogger().log(Level.SEVERE, "Failed to claim " + logLabel + " for " + claimant.getName(), exception);
+            resetDeliveringRewards(rewardIds, claimant.getUniqueId());
             return ClaimResult.failure(Component.text("Claim failed before delivery. Try again.", NamedTextColor.RED));
+        }
+
+        try {
+            claimant.getInventory().setStorageContents(plannedContents);
+            return ClaimResult.success(Component.text("Claimed " + rewardCount + " bounty reward(s).", NamedTextColor.GREEN));
         } catch (RuntimeException exception) {
-            plugin.getLogger().log(Level.SEVERE, "Failed while delivering selected bounty rewards to " + claimant.getName(), exception);
+            plugin.getLogger().log(Level.SEVERE, "Failed while delivering " + logLabel + " to " + claimant.getName(), exception);
+            try {
+                claimant.getInventory().setStorageContents(originalContents);
+                database.resetClaimedRewards(rewardIds, claimant.getUniqueId());
+            } catch (RuntimeException | SQLException resetException) {
+                plugin.getLogger().log(Level.SEVERE, "Claim delivery failed after rewards were marked claimed; admin recovery may be required for " + claimant.getName(), resetException);
+            }
             return ClaimResult.failure(Component.text("Claim failed during delivery. Contact an admin.", NamedTextColor.RED));
         }
+    }
+
+    private void resetDeliveringRewards(List<Long> rewardIds, UUID claimantUuid) {
+        try {
+            database.resetDeliveringRewards(rewardIds, claimantUuid);
+        } catch (SQLException resetException) {
+            plugin.getLogger().log(Level.SEVERE, "Failed to reset undelivered bounty rewards", resetException);
+        }
+    }
+
+    private ItemStack[] cloneStorageContents(ItemStack[] contents) {
+        ItemStack[] clone = new ItemStack[contents.length];
+        for (int i = 0; i < contents.length; i++) {
+            clone[i] = contents[i] == null ? null : contents[i].clone();
+        }
+        return clone;
     }
 
     public void stopHunt(Player hunter) {
@@ -831,14 +837,13 @@ public final class BountyService {
             sendHuntWarningHud(target, settings, Component.text("Your position has been revealed.", NamedTextColor.YELLOW));
 
             Component message = Component.text(targetName + " revealed at " + formatLocation(updated) + ".", NamedTextColor.GOLD);
-            notifyHunters(targetUuid, message, updated);
+            notifyHunters(targetUuid, message, updated, settings);
         } catch (SQLException exception) {
             plugin.getLogger().log(Level.WARNING, "Failed to reveal tracked bounty target", exception);
         }
     }
 
-    private void notifyHunters(UUID targetUuid, Component message, TrackingState state) throws SQLException {
-        PluginSettings settings = database.getPluginSettings();
+    private void notifyHunters(UUID targetUuid, Component message, TrackingState state, PluginSettings settings) {
         for (Map.Entry<UUID, UUID> entry : new ArrayList<>(huntedTargets.entrySet())) {
             if (!targetUuid.equals(entry.getValue())) {
                 continue;

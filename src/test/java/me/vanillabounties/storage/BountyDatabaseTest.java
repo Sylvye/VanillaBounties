@@ -52,6 +52,8 @@ class BountyDatabaseTest extends BukkitTestSupport {
             database.markRewardsClaimed(rewardIds, killer, 400L);
 
             assertTrue(database.listClaimableRewards(target.uuid(), killer).isEmpty());
+            database.resetClaimedRewards(rewardIds, killer);
+            assertEquals(2, database.listClaimableRewards(target.uuid(), killer).size());
         }
     }
 

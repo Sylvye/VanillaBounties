@@ -3,7 +3,7 @@ version: ${version}
 main: me.vanillabounties.VanillaBountiesPlugin
 api-version: '1.21.11'
 description: Item-backed bounty system for event SMPs.
-author: VanillaBounties
+author: Sylvye
 libraries:
   - org.xerial:sqlite-jdbc:3.53.2.0
 commands:

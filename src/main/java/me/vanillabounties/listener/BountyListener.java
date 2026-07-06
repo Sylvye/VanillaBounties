@@ -129,7 +129,7 @@ public final class BountyListener implements Listener {
             }
             if (holder instanceof BountySettingsMenuHolder) {
                 boolean topInventoryClick = event.getClickedInventory() == event.getView().getTopInventory();
-                if (topInventoryClick) {
+                if (topInventoryClick || movesItemsAcrossInventories(event.getAction())) {
                     event.setCancelled(true);
                 }
                 if (!(event.getWhoClicked() instanceof Player player)) {
@@ -310,5 +310,11 @@ public final class BountyListener implements Listener {
             || action == InventoryAction.PLACE_FROM_BUNDLE
             || action == InventoryAction.PLACE_ALL_INTO_BUNDLE
             || action == InventoryAction.PLACE_SOME_INTO_BUNDLE;
+    }
+
+    private boolean movesItemsAcrossInventories(InventoryAction action) {
+        return action == InventoryAction.MOVE_TO_OTHER_INVENTORY
+            || action == InventoryAction.COLLECT_TO_CURSOR
+            || action == InventoryAction.UNKNOWN;
     }
 }

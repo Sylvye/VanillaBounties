@@ -1025,6 +1025,32 @@ public final class BountyDatabase implements AutoCloseable {
         });
     }
 
+    public synchronized void resetClaimedRewards(List<Long> rewardIds, UUID claimantUuid) throws SQLException {
+        if (rewardIds.isEmpty()) {
+            return;
+        }
+
+        inTransaction(() -> {
+            try (PreparedStatement statement = connection.prepareStatement("""
+                UPDATE bounties
+                SET state = ?, claimed_at = NULL
+                WHERE id = ?
+                  AND claimant_uuid = ?
+                  AND state = ?
+                """)) {
+                for (long rewardId : rewardIds) {
+                    statement.setString(1, RewardState.CLAIMABLE.name());
+                    statement.setLong(2, rewardId);
+                    statement.setString(3, claimantUuid.toString());
+                    statement.setString(4, RewardState.CLAIMED.name());
+                    statement.addBatch();
+                }
+                statement.executeBatch();
+            }
+            return null;
+        });
+    }
+
     @Override
     public synchronized void close() throws SQLException {
         connection.close();
