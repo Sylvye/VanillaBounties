@@ -52,6 +52,7 @@ public final class BountyDatabase implements AutoCloseable {
     private static final String SETTING_HUNT_TIMER_BOSSBAR_ENABLED = "hunt_timer_bossbar_enabled";
 
     private final Connection connection;
+    private PluginSettings cachedSettings;
 
     public BountyDatabase(Path databasePath) throws SQLException {
         this.connection = DriverManager.getConnection("jdbc:sqlite:" + databasePath.toAbsolutePath());
@@ -63,6 +64,7 @@ public final class BountyDatabase implements AutoCloseable {
     }
 
     public synchronized void migrate() throws SQLException {
+        cachedSettings = null;
         try (Statement statement = connection.createStatement()) {
             statement.execute("""
                 CREATE TABLE IF NOT EXISTS known_players (
@@ -292,7 +294,7 @@ public final class BountyDatabase implements AutoCloseable {
     }
 
     public synchronized boolean autoBountiesEnabled() throws SQLException {
-        return readBooleanSetting(SETTING_AUTO_BOUNTIES_ENABLED, true);
+        return getPluginSettings().autoBountiesEnabled();
     }
 
     public synchronized void setAutoBountiesEnabled(boolean enabled) throws SQLException {
@@ -308,7 +310,10 @@ public final class BountyDatabase implements AutoCloseable {
     }
 
     public synchronized PluginSettings getPluginSettings() throws SQLException {
-        return new PluginSettings(
+        if (cachedSettings != null) {
+            return cachedSettings;
+        }
+        cachedSettings = new PluginSettings(
             readBooleanSetting(SETTING_AUTO_BOUNTIES_ENABLED, true),
             readBooleanSetting(SETTING_COUNT_NAKED_KILLS, true),
             readLongSetting(SETTING_SPAWN_KILL_PERIOD_MILLIS, 0L),
@@ -326,6 +331,7 @@ public final class BountyDatabase implements AutoCloseable {
             readLongSetting(SETTING_HUNT_DURATION_MILLIS, 1_200_000L),
             readBooleanSetting(SETTING_HUNT_TIMER_BOSSBAR_ENABLED, false)
         );
+        return cachedSettings;
     }
 
     public synchronized void setCountNakedKills(boolean enabled) throws SQLException {
@@ -1203,6 +1209,7 @@ public final class BountyDatabase implements AutoCloseable {
             statement.setString(1, key);
             statement.setString(2, value);
             statement.executeUpdate();
+            cachedSettings = null;
         }
     }
 

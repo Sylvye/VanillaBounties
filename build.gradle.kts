@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "me.vanillabounties"
-version = "1.0.0"
+version = "1.0.1"
 
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(21))
@@ -25,6 +25,7 @@ dependencies {
 }
 
 tasks.processResources {
+    inputs.property("version", project.version)
     filesMatching("plugin.yml") {
         expand("version" to project.version)
     }

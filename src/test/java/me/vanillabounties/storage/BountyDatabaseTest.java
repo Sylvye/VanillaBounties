@@ -23,10 +23,91 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class BountyDatabaseTest extends BukkitTestSupport {
     @TempDir
     Path tempDir;
+
+    @Test
+    void settingsReadsDoNotTouchSqlAfterTheCacheIsLoaded() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            PluginSettings first = database.getPluginSettings();
+            var field = BountyDatabase.class.getDeclaredField("connection");
+            field.setAccessible(true);
+            var connection = (java.sql.Connection) field.get(database);
+            // Closing the connection makes any accidental SQL read fail immediately.
+            connection.close();
+            assertEquals(first, database.getPluginSettings());
+            assertEquals(first.autoBountiesEnabled(), database.autoBountiesEnabled());
+            assertThrows(java.sql.SQLException.class, () -> database.setCountNakedKills(false));
+            assertEquals(first, database.getPluginSettings());
+        }
+    }
+
+    @Test
+    void callersCannotMutateCachedTrackingItemsAndChangesSurviveReopen() throws Exception {
+        Path path = tempDir.resolve("cached-settings.db");
+        try (BountyDatabase database = new BountyDatabase(path)) {
+            database.migrate();
+            database.getPluginSettings();
+            var item = new ItemStack(Material.ENDER_EYE, 3);
+            database.setTrackingItem(item);
+            item.setType(Material.STONE);
+            var cached = database.getPluginSettings();
+            cached.trackingItem().setType(Material.DIRT);
+            assertEquals(Material.ENDER_EYE, database.getPluginSettings().trackingItem().getType());
+            assertEquals(1, database.getPluginSettings().trackingItem().getAmount());
+            database.setAutoBountiesEnabled(false);
+            assertFalse(database.getPluginSettings().autoBountiesEnabled());
+            database.setTrackingItem((ItemStack) null);
+            assertFalse(database.getPluginSettings().trackingEnabled());
+        }
+        try (BountyDatabase database = new BountyDatabase(path)) {
+            database.migrate();
+            assertFalse(database.getPluginSettings().autoBountiesEnabled());
+            assertFalse(database.getPluginSettings().trackingEnabled());
+        }
+    }
+
+    @Test
+    void everySettingsSetterUpdatesTheNextCachedRead() throws Exception {
+        try (BountyDatabase database = openDatabase()) {
+            database.getPluginSettings();
+            database.setAutoBountiesEnabled(false);
+            assertFalse(database.getPluginSettings().autoBountiesEnabled());
+            database.setCountNakedKills(false);
+            assertFalse(database.getPluginSettings().countNakedKills());
+            database.setSpawnKillPeriodMillis(1234);
+            assertEquals(1234, database.getPluginSettings().spawnKillPeriodMillis());
+            database.setCountRepeatKills(false);
+            assertFalse(database.getPluginSettings().countRepeatKills());
+            database.setAllowSelfBounties(true);
+            assertTrue(database.getPluginSettings().allowSelfBounties());
+            database.setTrackingItem(Material.ENDER_EYE);
+            assertEquals(Material.ENDER_EYE, database.getPluginSettings().trackingItem().getType());
+            database.setTrackingPeriodMillis(1234);
+            assertEquals(1234, database.getPluginSettings().trackingPeriodMillis());
+            database.setTrackingGlowingDurationMillis(1234);
+            assertEquals(1234, database.getPluginSettings().trackingGlowingDurationMillis());
+            database.setTrackingCompassEnabled(false);
+            assertFalse(database.getPluginSettings().trackingCompassEnabled());
+            database.setHuntHud(HuntHudMode.CHAT);
+            assertEquals(HuntHudMode.CHAT, database.getPluginSettings().huntHud());
+            database.setHuntWarningHud(HuntHudMode.ACTION_BAR);
+            assertEquals(HuntHudMode.ACTION_BAR, database.getPluginSettings().huntWarningHud());
+            database.setSpookyHuntWarningsEnabled(false);
+            assertFalse(database.getPluginSettings().spookyHuntWarningsEnabled());
+            database.setHuntGracePeriodMillis(1234);
+            assertEquals(1234, database.getPluginSettings().huntGracePeriodMillis());
+            database.setHuntRevealWarningMillis(1234);
+            assertEquals(1234, database.getPluginSettings().huntRevealWarningMillis());
+            database.setHuntDurationMillis(1234);
+            assertEquals(1234, database.getPluginSettings().huntDurationMillis());
+            database.setHuntTimerBossBarEnabled(true);
+            assertTrue(database.getPluginSettings().huntTimerBossBarEnabled());
+        }
+    }
 
     @Test
     void movesActiveRewardsToOneClaimantAndClaimsOnce() throws Exception {

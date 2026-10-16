@@ -21,6 +21,15 @@ public record PluginSettings(
     long huntDurationMillis,
     boolean huntTimerBossBarEnabled
 ) {
+    public PluginSettings {
+        trackingItem = trackingItem == null ? null : trackingItem.clone();
+    }
+
+    @Override
+    public ItemStack trackingItem() {
+        return trackingItem == null ? null : trackingItem.clone();
+    }
+
     public boolean trackingEnabled() {
         return trackingItem != null && trackingItem.getType() != Material.AIR;
     }
