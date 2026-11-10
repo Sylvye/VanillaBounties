@@ -12,6 +12,11 @@ public record BountyReward(
     String placerName,
     ItemStack item,
     RewardState state,
-    BountyVisibility visibility
+    BountyVisibility visibility,
+    UUID escrowToken
 ) {
+    public BountyReward(long id, UUID targetUuid, String targetName, UUID placerUuid,
+                        String placerName, ItemStack item, RewardState state, BountyVisibility visibility) {
+        this(id, targetUuid, targetName, placerUuid, placerName, item, state, visibility, null);
+    }
 }

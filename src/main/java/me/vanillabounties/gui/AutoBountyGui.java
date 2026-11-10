@@ -205,7 +205,9 @@ public final class AutoBountyGui {
         }
 
         try {
-            if (bountyService.addAutoBountyTemplate(holder.folderId(), sample)) {
+            if (me.vanillabounties.api.MythicCustody.containsMythic(sample)) {
+                admin.sendMessage(Component.text("Mythics cannot be automatic bounty rewards.", NamedTextColor.RED));
+            } else if (bountyService.addAutoBountyTemplate(holder.folderId(), sample)) {
                 admin.sendMessage(Component.text("Added template item.", NamedTextColor.GREEN));
             } else {
                 admin.sendMessage(Component.text("That folder is full.", NamedTextColor.RED));

@@ -1,5 +1,6 @@
 package me.vanillabounties;
 
+import me.vanillabounties.api.MythicCustody;
 import me.vanillabounties.command.BountiesCommand;
 import me.vanillabounties.command.AutoBountiesCommand;
 import me.vanillabounties.command.BountyCommand;
@@ -10,6 +11,7 @@ import me.vanillabounties.gui.BountySettingsGui;
 import me.vanillabounties.listener.BountyListener;
 import me.vanillabounties.storage.BountyDatabase;
 import org.bukkit.command.PluginCommand;
+import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.sql.SQLException;
@@ -36,6 +38,8 @@ public final class VanillaBountiesPlugin extends JavaPlugin {
         }
 
         bountyService = new BountyService(this, database);
+        getServer().getServicesManager().register(
+            MythicCustody.Ledger.class, database::escrowOutcome, this, ServicePriority.Normal);
         bountyConfirmationGui = new BountyConfirmationGui(bountyService);
         bountyGui = new BountyGui(bountyService);
         autoBountyGui = new AutoBountyGui(bountyService);

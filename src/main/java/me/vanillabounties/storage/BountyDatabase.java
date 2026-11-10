@@ -1,5 +1,7 @@
 package me.vanillabounties.storage;
 
+import me.vanillabounties.api.MythicCustody;
+
 import me.vanillabounties.model.BountyReward;
 import me.vanillabounties.model.BountySummary;
 import me.vanillabounties.model.AutoBountyFolder;
@@ -169,6 +171,12 @@ public final class BountyDatabase implements AutoCloseable {
                 """);
         }
         addColumnIfMissing("bounties", "visibility", "TEXT NOT NULL DEFAULT 'NORMAL'");
+        addColumnIfMissing("bounties", "escrow_token", "TEXT");
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_bounties_escrow ON bounties(escrow_token) WHERE escrow_token IS NOT NULL");
+            // A reservation interrupted before CLAIMED can be attempted again.
+            statement.execute("UPDATE bounties SET state = 'CLAIMABLE' WHERE escrow_token IS NOT NULL AND state = 'DELIVERING'");
+        }
         addColumnIfMissing("public_tracking", "warned_at", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing("public_tracking", "reveal_warning_sent_for", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing("public_tracking", "hunt_started_at", "INTEGER NOT NULL DEFAULT 0");
@@ -271,16 +279,24 @@ public final class BountyDatabase implements AutoCloseable {
         long now,
         BountyVisibility visibility
     ) throws SQLException {
+        insertActiveBounty(new KnownPlayer(targetUuid, targetName, now), placerUuid, placerName,
+            item, now, visibility, null);
+    }
+
+    public synchronized void insertActiveBounty(
+        KnownPlayer target, UUID placerUuid, String placerName, ItemStack item,
+        long now, BountyVisibility visibility, UUID escrowToken
+    ) throws SQLException {
         byte[] encoded = encode(item);
         try (PreparedStatement statement = connection.prepareStatement("""
             INSERT INTO bounties(
                 target_uuid, target_name, placer_uuid, placer_name,
-                item_blob, item_type, item_amount, visibility, state, created_at
+                item_blob, item_type, item_amount, visibility, state, created_at, escrow_token
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """)) {
-            statement.setString(1, targetUuid.toString());
-            statement.setString(2, targetName);
+            statement.setString(1, target.uuid().toString());
+            statement.setString(2, target.name());
             statement.setString(3, placerUuid.toString());
             statement.setString(4, placerName);
             statement.setBytes(5, encoded);
@@ -289,7 +305,28 @@ public final class BountyDatabase implements AutoCloseable {
             statement.setString(8, visibility.name());
             statement.setString(9, RewardState.ACTIVE.name());
             statement.setLong(10, now);
+            statement.setString(11, escrowToken == null ? null : escrowToken.toString());
             statement.executeUpdate();
+        }
+    }
+
+    public synchronized MythicCustody.Outcome escrowOutcome(UUID token) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+            SELECT state, placer_uuid, claimant_uuid FROM bounties WHERE escrow_token = ?
+            """)) {
+            statement.setString(1, token.toString());
+            try (ResultSet row = statement.executeQuery()) {
+                if (!row.next()) return new MythicCustody.Outcome(MythicCustody.State.MISSING, null);
+                return switch (RewardState.valueOf(row.getString("state"))) {
+                    case ACTIVE, CLAIMABLE, DELIVERING ->
+                        new MythicCustody.Outcome(MythicCustody.State.ESCROWED, null);
+                    case CLAIMED -> new MythicCustody.Outcome(MythicCustody.State.DELIVERED,
+                        UUID.fromString(row.getString("claimant_uuid")));
+                    case REFUNDED -> new MythicCustody.Outcome(MythicCustody.State.DELIVERED,
+                        UUID.fromString(row.getString("placer_uuid")));
+                    case DELETED -> new MythicCustody.Outcome(MythicCustody.State.DELETED, null);
+                };
+            }
         }
     }
 
@@ -606,7 +643,8 @@ public final class BountyDatabase implements AutoCloseable {
                 return new AutoBountyApplyResult(newStreak, 0, false);
             }
 
-            List<ItemStack> templates = listTemplatesForThresholdsInTransaction(ON_KILL_THRESHOLD, newStreak);
+            List<ItemStack> templates = listTemplatesForThresholdsInTransaction(ON_KILL_THRESHOLD, newStreak)
+                .stream().filter(item -> !MythicCustody.containsMythic(item)).toList();
             try (PreparedStatement insert = connection.prepareStatement("""
                 INSERT INTO bounties(
                     target_uuid, target_name, placer_uuid, placer_name,
@@ -658,39 +696,41 @@ public final class BountyDatabase implements AutoCloseable {
     }
 
     public synchronized int clearActiveBounties() throws SQLException {
-        return inTransaction(() -> {
-            try (PreparedStatement deleteTracking = connection.prepareStatement("""
-                DELETE FROM public_tracking
-                WHERE target_uuid IN (
-                    SELECT DISTINCT target_uuid FROM bounties WHERE state = ?
-                )
-                """);
-                 PreparedStatement statement = connection.prepareStatement("""
-                     DELETE FROM bounties
-                     WHERE state = ?
-                     """)) {
-                deleteTracking.setString(1, RewardState.ACTIVE.name());
-                deleteTracking.executeUpdate();
-                statement.setString(1, RewardState.ACTIVE.name());
-                return statement.executeUpdate();
-            }
-        });
+        return clearActiveBounties(null, false).count();
     }
 
     public synchronized int clearActiveBounties(UUID targetUuid) throws SQLException {
+        return clearActiveBounties(targetUuid, false).count();
+    }
+
+    public record ClearedBounties(int count, List<UUID> escrowTokens) {}
+
+    public synchronized ClearedBounties clearActiveBounties(UUID targetUuid, boolean refund) throws SQLException {
         return inTransaction(() -> {
-            try (PreparedStatement statement = connection.prepareStatement("""
-                DELETE FROM bounties
-                WHERE target_uuid = ?
-                  AND state = ?
-                """)) {
-                statement.setString(1, targetUuid.toString());
-                statement.setString(2, RewardState.ACTIVE.name());
-                int cleared = statement.executeUpdate();
-                if (cleared > 0) {
-                    deleteTrackingInTransaction(targetUuid);
+            String active = " WHERE state = 'ACTIVE'"
+                + (targetUuid == null ? "" : " AND target_uuid = ?");
+            List<UUID> tokens = new ArrayList<>();
+            try (PreparedStatement read = connection.prepareStatement(
+                     "SELECT escrow_token FROM bounties" + active + " AND escrow_token IS NOT NULL");
+                 PreparedStatement tracking = connection.prepareStatement(
+                     "DELETE FROM public_tracking WHERE target_uuid IN (SELECT target_uuid FROM bounties" + active + ")");
+                 PreparedStatement delete = connection.prepareStatement(
+                     "DELETE FROM bounties" + active + " AND escrow_token IS NULL");
+                 PreparedStatement retain = connection.prepareStatement(
+                     "UPDATE bounties SET state = ?" + active
+                         + " AND escrow_token IS NOT NULL")) {
+                if (targetUuid != null) {
+                    for (PreparedStatement statement : List.of(read, tracking, delete)) {
+                        statement.setString(1, targetUuid.toString());
+                    }
+                    retain.setString(2, targetUuid.toString());
                 }
-                return cleared;
+                try (ResultSet rows = read.executeQuery()) {
+                    while (rows.next()) tokens.add(UUID.fromString(rows.getString(1)));
+                }
+                tracking.executeUpdate();
+                retain.setString(1, (refund ? RewardState.REFUNDED : RewardState.DELETED).name());
+                return new ClearedBounties(delete.executeUpdate() + retain.executeUpdate(), List.copyOf(tokens));
             }
         });
     }
@@ -1435,7 +1475,9 @@ public final class BountyDatabase implements AutoCloseable {
                     resultSet.getString("placer_name"),
                     decode(resultSet.getBytes("item_blob")),
                     RewardState.valueOf(resultSet.getString("state")),
-                    readVisibility(resultSet.getString("visibility"))
+                    readVisibility(resultSet.getString("visibility")),
+                    resultSet.getString("escrow_token") == null ? null
+                        : UUID.fromString(resultSet.getString("escrow_token"))
                 ));
             }
             return rewards;

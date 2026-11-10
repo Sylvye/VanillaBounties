@@ -4,5 +4,7 @@ public enum RewardState {
     ACTIVE,
     CLAIMABLE,
     DELIVERING,
-    CLAIMED
+    CLAIMED,
+    REFUNDED,
+    DELETED
 }

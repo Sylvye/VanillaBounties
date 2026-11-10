@@ -1,5 +1,6 @@
 package me.vanillabounties;
 
+import me.vanillabounties.api.MythicCustody;
 import me.vanillabounties.model.BountyReward;
 import me.vanillabounties.model.BountySummary;
 import me.vanillabounties.model.AutoBountyFolder;
@@ -141,22 +142,57 @@ public final class BountyService {
         }
 
         ItemStack escrowed = hand.clone();
+        MythicCustody custody = null;
+        UUID token = null;
+        if (MythicCustody.isMythic(escrowed)) {
+            custody = mythicCustody();
+            if (custody == null) {
+                return PlaceResult.failure(Component.text("Mythic bounty custody is unavailable.", NamedTextColor.RED));
+            }
+            token = custody.reserve(placer, escrowed);
+            if (token == null) {
+                return PlaceResult.failure(Component.text("Only transferable mythics you own can be placed as bounties.", NamedTextColor.RED));
+            }
+        } else if (MythicCustody.containsMythic(escrowed)) {
+            return PlaceResult.failure(Component.text("Place a mythic directly from your hand.", NamedTextColor.RED));
+        }
         placer.getInventory().setItemInMainHand(null);
 
         try {
-            database.insertActiveBounty(target, placer.getUniqueId(), placer.getName(), escrowed, System.currentTimeMillis(), visibility);
-            if (visibility == BountyVisibility.PUBLIC) {
-                plugin.getServer().sendMessage(publicBountyMessage(placer, target, escrowed));
+            database.insertActiveBounty(target, placer.getUniqueId(), placer.getName(), escrowed,
+                System.currentTimeMillis(), visibility, token);
+        } catch (SQLException | RuntimeException exception) {
+            plugin.getLogger().log(Level.SEVERE, "Failed to persist bounty for " + placer.getName(), exception);
+            if (token != null) {
+                custody.reconcile(token);
+                return PlaceResult.failure(Component.text("The bounty could not be confirmed. Check the board and your inventory before retrying.", NamedTextColor.RED));
             }
-            return PlaceResult.success(Component.text("Placed ")
-                .color(NamedTextColor.GREEN)
-                .append(itemComponent(escrowed))
-                .append(Component.text(" on " + target.name() + ".", NamedTextColor.GREEN)));
-        } catch (SQLException exception) {
             giveOrDrop(placer, escrowed);
-            plugin.getLogger().log(Level.SEVERE, "Failed to persist bounty; item returned to " + placer.getName(), exception);
             return PlaceResult.failure(Component.text("The bounty could not be saved. Your item was returned.", NamedTextColor.RED));
         }
+        if (visibility == BountyVisibility.PUBLIC) {
+            plugin.getServer().sendMessage(publicBountyMessage(placer, target, escrowed));
+        }
+        return PlaceResult.success(Component.text("Placed ")
+            .color(NamedTextColor.GREEN)
+            .append(itemComponent(escrowed))
+            .append(Component.text(" on " + target.name() + ".", NamedTextColor.GREEN)));
+    }
+
+    private MythicCustody mythicCustody() {
+        return plugin.getServer().getServicesManager().load(MythicCustody.class);
+    }
+
+    private boolean validCustody(BountyReward reward) {
+        if (reward.escrowToken() == null) return !MythicCustody.containsMythic(reward.item());
+        MythicCustody custody = mythicCustody();
+        return custody != null && custody.reserved(reward.escrowToken(), reward.item());
+    }
+
+    private void reconcileEscrow(List<UUID> tokens) {
+        if (tokens.isEmpty()) return;
+        MythicCustody custody = mythicCustody();
+        if (custody != null) tokens.forEach(custody::reconcile);
     }
 
     private boolean sameStack(ItemStack actual, ItemStack expected) {
@@ -285,7 +321,10 @@ public final class BountyService {
             return new ClearResult(0, 0, unavailablePlacers);
         }
 
-        int cleared = database.clearActiveBounties();
+        int refundable = refundableRewardCount(activeRewards);
+        var result = database.clearActiveBounties(null, mode == ClearMode.REFUND);
+        int cleared = result.count();
+        reconcileEscrow(result.escrowTokens());
         if (cleared > 0) {
             if (mode == ClearMode.REFUND) {
                 refundRewards(activeRewards);
@@ -294,7 +333,7 @@ public final class BountyService {
                 clearHuntsForTarget(state.targetUuid(), Component.text("The bounty on " + state.targetName() + " was cleared.", NamedTextColor.YELLOW));
             }
         }
-        return new ClearResult(cleared, mode == ClearMode.REFUND ? refundableRewardCount(activeRewards) : 0, List.of());
+        return new ClearResult(cleared, refundable, List.of());
     }
 
     public int clearActiveBounties(UUID targetUuid) throws SQLException {
@@ -309,21 +348,25 @@ public final class BountyService {
             return new ClearResult(0, 0, unavailablePlacers);
         }
 
-        int cleared = database.clearActiveBounties(targetUuid);
+        int refundable = refundableRewardCount(activeRewards);
+        var result = database.clearActiveBounties(targetUuid, mode == ClearMode.REFUND);
+        int cleared = result.count();
+        reconcileEscrow(result.escrowTokens());
         if (cleared > 0 && mode == ClearMode.REFUND) {
             refundRewards(activeRewards);
         }
         if (cleared > 0 && tracked.isPresent()) {
             clearHuntsForTarget(targetUuid, Component.text("The bounty on " + tracked.get().targetName() + " was cleared.", NamedTextColor.YELLOW));
         }
-        return new ClearResult(cleared, mode == ClearMode.REFUND ? refundableRewardCount(activeRewards) : 0, List.of());
+        return new ClearResult(cleared, refundable, List.of());
     }
 
     private List<String> unavailableRefundPlacers(List<BountyReward> rewards) {
         Set<UUID> seen = new HashSet<>();
         List<String> unavailable = new ArrayList<>();
         for (BountyReward reward : rewards) {
-            if (BountyDatabase.SERVER_PLACER_UUID.equals(reward.placerUuid()) || !seen.add(reward.placerUuid())) {
+            if (!validCustody(reward) || BountyDatabase.SERVER_PLACER_UUID.equals(reward.placerUuid())
+                || !seen.add(reward.placerUuid())) {
                 continue;
             }
             if (Bukkit.getPlayer(reward.placerUuid()) == null) {
@@ -335,7 +378,8 @@ public final class BountyService {
 
     private void refundRewards(List<BountyReward> rewards) {
         for (BountyReward reward : rewards) {
-            if (BountyDatabase.SERVER_PLACER_UUID.equals(reward.placerUuid())) {
+            if (reward.escrowToken() != null || MythicCustody.containsMythic(reward.item())
+                || BountyDatabase.SERVER_PLACER_UUID.equals(reward.placerUuid())) {
                 continue;
             }
             Player placer = Bukkit.getPlayer(reward.placerUuid());
@@ -348,7 +392,7 @@ public final class BountyService {
     private int refundableRewardCount(List<BountyReward> rewards) {
         int count = 0;
         for (BountyReward reward : rewards) {
-            if (!BountyDatabase.SERVER_PLACER_UUID.equals(reward.placerUuid())) {
+            if (!BountyDatabase.SERVER_PLACER_UUID.equals(reward.placerUuid()) && validCustody(reward)) {
                 count++;
             }
         }
@@ -567,6 +611,7 @@ public final class BountyService {
     }
 
     public boolean addAutoBountyTemplate(long folderId, ItemStack item) throws SQLException {
+        if (MythicCustody.containsMythic(item)) return false;
         return database.addAutoBountyTemplate(folderId, item == null ? null : item.clone());
     }
 
@@ -587,14 +632,14 @@ public final class BountyService {
             return ClaimResult.failure(Component.text("You do not have any claimable rewards for that player.", NamedTextColor.RED));
         }
 
+        if (rewards.stream().anyMatch(reward -> !validCustody(reward))) return missingCustody();
         List<ItemStack> items = rewards.stream().map(BountyReward::item).toList();
         Optional<ItemStack[]> plannedContents = InventoryPlanner.planStorageContents(claimant.getInventory().getStorageContents(), items);
         if (plannedContents.isEmpty()) {
             return ClaimResult.failure(Component.text("Make enough inventory space to claim every reward at once.", NamedTextColor.RED));
         }
 
-        List<Long> rewardIds = rewards.stream().map(BountyReward::id).toList();
-        return claimPlannedRewards(claimant, rewardIds, rewards.size(), plannedContents.get(), "bounty rewards");
+        return claimPlannedRewards(claimant, rewards, plannedContents.get(), "bounty rewards");
     }
 
     public ClaimResult claimReward(Player claimant, UUID targetUuid, long rewardId) {
@@ -617,16 +662,22 @@ public final class BountyService {
             return ClaimResult.failure(Component.text("Claim failed because rewards could not be loaded.", NamedTextColor.RED));
         }
 
+        if (rewards.stream().anyMatch(reward -> !validCustody(reward))) return missingCustody();
         List<ItemStack> items = rewards.stream().map(BountyReward::item).toList();
         Optional<ItemStack[]> plannedContents = InventoryPlanner.planStorageContents(claimant.getInventory().getStorageContents(), items);
         if (plannedContents.isEmpty()) {
             return ClaimResult.failure(Component.text("Make enough inventory space to claim that reward stack.", NamedTextColor.RED));
         }
 
-        return claimPlannedRewards(claimant, rewardIds, rewards.size(), plannedContents.get(), "selected bounty rewards");
+        return claimPlannedRewards(claimant, rewards, plannedContents.get(), "selected bounty rewards");
     }
 
-    private ClaimResult claimPlannedRewards(Player claimant, List<Long> rewardIds, int rewardCount, ItemStack[] plannedContents, String logLabel) {
+    private ClaimResult missingCustody() {
+        return ClaimResult.failure(Component.text("A mythic reward has no verified custody. Contact an admin.", NamedTextColor.RED));
+    }
+
+    private ClaimResult claimPlannedRewards(Player claimant, List<BountyReward> rewards, ItemStack[] plannedContents, String logLabel) {
+        List<Long> rewardIds = rewards.stream().map(BountyReward::id).toList();
         ItemStack[] originalContents = cloneStorageContents(claimant.getInventory().getStorageContents());
         try {
             boolean locked = database.markRewardsDelivering(rewardIds, claimant.getUniqueId());
@@ -643,7 +694,6 @@ public final class BountyService {
 
         try {
             claimant.getInventory().setStorageContents(plannedContents);
-            return ClaimResult.success(Component.text("Claimed " + rewardCount + " bounty reward(s).", NamedTextColor.GREEN));
         } catch (RuntimeException exception) {
             plugin.getLogger().log(Level.SEVERE, "Failed while delivering " + logLabel + " to " + claimant.getName(), exception);
             try {
@@ -654,6 +704,8 @@ public final class BountyService {
             }
             return ClaimResult.failure(Component.text("Claim failed during delivery. Contact an admin.", NamedTextColor.RED));
         }
+        reconcileEscrow(rewards.stream().map(BountyReward::escrowToken).filter(java.util.Objects::nonNull).toList());
+        return ClaimResult.success(Component.text("Claimed " + rewards.size() + " bounty reward(s).", NamedTextColor.GREEN));
     }
 
     private void resetDeliveringRewards(List<Long> rewardIds, UUID claimantUuid) {
